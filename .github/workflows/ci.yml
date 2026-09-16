@@ -18,6 +18,11 @@ env:
   # 与本地 `golangci-lint --version` 对齐，避免 CI 与本地结论不一致。
   # 注意：golangci-lint 2.x 必须配 golangci-lint-action v7 及以上。
   GOLANGCI_LINT_VERSION: "v2.13.2"
+  # 与 docs/本地开发环境.md 记录的版本对齐
+  GOLANG_MIGRATE_VERSION: "v4.20.1"
+  # 端口取自 docker-compose.yml 的映射（刻意避开 3306，防止与本机实例冲突）。
+  # 密码是容器内的默认值，仅用于 CI 的一次性容器。
+  CI_MYSQL_TEST_DSN: "root:root@tcp(127.0.0.1:3307)/c_ssl_test?charset=utf8mb4&parseTime=true&loc=Local"
 
 jobs:
   contract:
@@ -65,6 +70,18 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: server/go.sum
 
+      - name: 启动依赖服务（MySQL / Redis）
+        # 用仓库里的 compose 定义，而不是 GitHub 的 services 块：
+        # 这样本地想复现 CI 环境是同一条命令，定义也不会因为没人用而腐坏。
+        # --wait 会等到 healthcheck 通过才返回。
+        working-directory: .
+        run: docker compose up -d --wait
+
+      - name: 安装 golang-migrate
+        # 测试库需要先迁移，所以这里必须有 migrate 二进制。
+        # 版本与 docs/本地开发环境.md 记录的一致，避免 CI 与本地行为分叉。
+        run: go install -tags mysql github.com/golang-migrate/migrate/v4/cmd/migrate@${{ env.GOLANG_MIGRATE_VERSION }}
+
       - name: 编译
         run: go build ./...
 
@@ -77,7 +94,13 @@ jobs:
         run: make fmt-check
 
       - name: 单元测试
-        run: go test ./... -race -count=1
+        # 用 test-db 而不是 test：它会先把测试库迁移到最新版本，
+        # 保证需要数据库的用例真的执行，而不是因为表不存在而失败、
+        # 或者因为连不上库而静默跳过。
+        working-directory: .
+        run: make test-db
+        env:
+          MYSQL_TEST_DSN: ${{ env.CI_MYSQL_TEST_DSN }}
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
