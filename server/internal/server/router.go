@@ -12,11 +12,14 @@ import (
 
 	"github.com/cangerx/c-ssl/server/internal/config"
 	"github.com/cangerx/c-ssl/server/internal/domain/errs"
+	"github.com/cangerx/c-ssl/server/internal/domain/token"
 	"github.com/cangerx/c-ssl/server/internal/platform/mysql"
+	"github.com/cangerx/c-ssl/server/internal/platform/ratelimit"
 	platformredis "github.com/cangerx/c-ssl/server/internal/platform/redis"
 	"github.com/cangerx/c-ssl/server/internal/product"
 	"github.com/cangerx/c-ssl/server/internal/server/httpx"
 	"github.com/cangerx/c-ssl/server/internal/server/middleware"
+	"github.com/cangerx/c-ssl/server/internal/user"
 )
 
 const (
@@ -55,8 +58,19 @@ func NewRouter(deps Deps) http.Handler {
 
 	r.Get("/health", deps.handleHealth)
 
+	// 令牌签发器与限流器是横切依赖，在装配处构造一次后传给各业务域。
+	signer := token.NewSigner(deps.Config.JWTSecret, deps.Config.JWTAccessTTL)
+	limiter := ratelimit.New(deps.Redis)
+	auth := middleware.Auth(signer)
+
 	r.Route(APIPrefix, func(r chi.Router) {
 		// 垂直切片逐个接入。每个域自带 Routes，路由表在此集中装配。
+		user.NewHandler(
+			user.NewService(user.NewRepository(deps.DB), signer, limiter, deps.Config.JWTRefreshTTL),
+			auth,
+			deps.Config.TrustProxy,
+		).Routes(r)
+
 		product.NewHandler(product.NewService(product.NewRepository(deps.DB))).Routes(r)
 	})
 

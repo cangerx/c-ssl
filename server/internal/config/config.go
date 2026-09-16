@@ -33,6 +33,12 @@ type Config struct {
 	JWTAccessTTL  time.Duration
 	JWTRefreshTTL time.Duration
 
+	// TrustProxy 决定是否采信 X-Forwarded-For 等转发头来判定客户端 IP。
+	//
+	// 默认关闭：这些头是客户端可以随意伪造的，直接采信会让限流形同虚设。
+	// 只有当服务确实部署在可信反向代理之后时才应打开。
+	TrustProxy bool
+
 	LogLevel string
 
 	// EnvFile 记录实际加载的 .env 路径，为空表示未加载文件。仅用于启动日志。
@@ -66,6 +72,8 @@ func Load() (*Config, error) {
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
 		JWTSecret: getEnv("JWT_SECRET", ""),
+
+		TrustProxy: getEnvBool("TRUST_PROXY", false),
 
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		EnvFile:  envFile,
@@ -232,4 +240,20 @@ func getEnvDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s 必须是合法时长（如 15m、168h），当前值 %q", key, raw)
 	}
 	return v, nil
+}
+
+// getEnvBool 解析布尔配置。接受 1/true/yes/on 与 0/false/no/off，不区分大小写。
+func getEnvBool(key string, fallback bool) bool {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
