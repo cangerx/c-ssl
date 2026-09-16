@@ -33,6 +33,14 @@ type Config struct {
 	JWTAccessTTL  time.Duration
 	JWTRefreshTTL time.Duration
 
+	// PaymentProvider 是默认支付渠道标识，用户未指定渠道时使用。
+	PaymentProvider string
+	// PaymentWebhookSecret 是支付渠道回调的验签密钥。
+	//
+	// 与 FoxSSL 的 Webhook 密钥分开配置：两个上游的密钥轮换节奏不同，
+	// 共用一个意味着轮换其中一个会同时打断另一个。
+	PaymentWebhookSecret string
+
 	// TrustProxy 决定是否采信 X-Forwarded-For 等转发头来判定客户端 IP。
 	//
 	// 默认关闭：这些头是客户端可以随意伪造的，直接采信会让限流形同虚设。
@@ -45,9 +53,25 @@ type Config struct {
 	EnvFile string
 }
 
+// paymentProviderMock 与 upstream/payment 的 NameMock 一致。
+//
+// 这里刻意写字面量而不是导入 payment 包：config 是底层包，
+// 让配置去依赖业务上游包会把依赖方向倒过来。
+// 两边取值不一致由 TestMockProviderNameMatches 兜住。
+const paymentProviderMock = "mock"
+
 // IsDevelopment 判断是否运行在开发环境。
 func (c *Config) IsDevelopment() bool {
 	return strings.EqualFold(c.AppEnv, "development")
+}
+
+// IsProduction 判断是否运行在生产环境。
+//
+// 与 IsDevelopment 分开而不是用 !IsDevelopment：中间的过渡环境（staging、
+// 预发）既不是开发也不是生产，用取反会把它们一并当成生产，
+// 于是「只在生产生效的严格校验」会在预发环境意外拦住部署。
+func (c *Config) IsProduction() bool {
+	return strings.EqualFold(c.AppEnv, "production")
 }
 
 // Addr 返回 HTTP 服务监听地址。
@@ -72,6 +96,9 @@ func Load() (*Config, error) {
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
 		JWTSecret: getEnv("JWT_SECRET", ""),
+
+		PaymentProvider:      getEnv("PAYMENT_PROVIDER", paymentProviderMock),
+		PaymentWebhookSecret: getEnv("PAYMENT_WEBHOOK_SECRET", ""),
 
 		TrustProxy: getEnvBool("TRUST_PROXY", false),
 
@@ -107,6 +134,9 @@ func (c *Config) validate() error {
 	if c.JWTSecret == "" {
 		missing = append(missing, "JWT_SECRET")
 	}
+	if c.PaymentWebhookSecret == "" {
+		missing = append(missing, "PAYMENT_WEBHOOK_SECRET")
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("缺少必需配置: %s（检查 .env 或进程环境变量）", strings.Join(missing, ", "))
 	}
@@ -116,8 +146,21 @@ func (c *Config) validate() error {
 		return fmt.Errorf("REDIS_DB 为 0，本地实例的 db0 常被其他项目共用，请改用独立 db index（如 1）")
 	}
 
-	if !c.IsDevelopment() && len(c.JWTSecret) < 32 {
-		return fmt.Errorf("非开发环境的 JWT_SECRET 长度不足 32 位")
+	if !c.IsDevelopment() {
+		if len(c.JWTSecret) < 32 {
+			return fmt.Errorf("非开发环境的 JWT_SECRET 长度不足 32 位")
+		}
+		// 密钥短到可以被暴力枚举时，验签就只是一道装饰：
+		// 攻击者能自己算出合法签名，然后伪造回调给任意账户充值。
+		if len(c.PaymentWebhookSecret) < 32 {
+			return fmt.Errorf("非开发环境的 PAYMENT_WEBHOOK_SECRET 长度不足 32 位")
+		}
+	}
+
+	// Mock 渠道不会真的收钱：它生成的支付地址是本地页面，回调也由本服务自己发出。
+	// 在生产环境启用等于给所有用户免费充值，因此直接拒绝启动。
+	if c.IsProduction() && c.PaymentProvider == paymentProviderMock {
+		return fmt.Errorf("生产环境不能启用 %s 支付渠道，请配置真实的 PAYMENT_PROVIDER", paymentProviderMock)
 	}
 
 	return nil
@@ -132,6 +175,8 @@ func (c *Config) LogSummary() []any {
 		"redis_addr", c.RedisAddr,
 		"redis_db", c.RedisDB,
 		"jwt_secret", logger.Redact(c.JWTSecret),
+		"payment_provider", c.PaymentProvider,
+		"payment_webhook_secret", logger.Redact(c.PaymentWebhookSecret),
 		"log_level", c.LogLevel,
 		"env_file", c.EnvFile,
 	}

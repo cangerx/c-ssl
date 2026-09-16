@@ -17,8 +17,10 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/platform/ratelimit"
 	platformredis "github.com/cangerx/c-ssl/server/internal/platform/redis"
 	"github.com/cangerx/c-ssl/server/internal/product"
+	"github.com/cangerx/c-ssl/server/internal/recharge"
 	"github.com/cangerx/c-ssl/server/internal/server/httpx"
 	"github.com/cangerx/c-ssl/server/internal/server/middleware"
+	"github.com/cangerx/c-ssl/server/internal/upstream/payment"
 	"github.com/cangerx/c-ssl/server/internal/user"
 	"github.com/cangerx/c-ssl/server/internal/wallet"
 )
@@ -39,6 +41,11 @@ type Deps struct {
 	DB      *sql.DB
 	Redis   *goredis.Client
 	Version string
+
+	// PaymentChannels 是已注册的支付渠道，由 bootstrap 构造。
+	PaymentChannels []payment.Channel
+	// MockPaymentChannel 非空时注册开发环境的模拟回调接口。
+	MockPaymentChannel *payment.MockChannel
 }
 
 // NewRouter 构建路由。中间件顺序为 Trace → Log → Recover，
@@ -75,6 +82,21 @@ func NewRouter(deps Deps) http.Handler {
 		product.NewHandler(product.NewService(product.NewRepository(deps.DB))).Routes(r)
 
 		wallet.NewHandler(wallet.NewService(wallet.NewRepository(deps.DB)), auth).Routes(r)
+
+		// 充值域同时持有钱包服务：支付回调要在一个事务里
+		// 改单状态 + 加款 + 写账本，加款必须走钱包域，不能自己动余额表。
+		recharge.NewHandler(
+			recharge.NewService(
+				recharge.NewRepository(deps.DB),
+				wallet.NewService(wallet.NewRepository(deps.DB)),
+				deps.PaymentChannels,
+				deps.Config.PaymentProvider,
+				deps.Config.AppBaseURL,
+			),
+			auth,
+			deps.MockPaymentChannel,
+			deps.Config.TrustProxy,
+		).Routes(r)
 	})
 
 	return r

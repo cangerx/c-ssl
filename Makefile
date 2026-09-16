@@ -186,6 +186,10 @@ run-cron: check-server ## 本地启动 Cron
 smoke-auth: ## 认证域端到端冒烟（需先 make run-api）
 	@$(PYTHON) scripts/smoke-auth.py $(if $(BASE),--base $(BASE),)
 
+.PHONY: smoke-recharge
+smoke-recharge: ## 充值域端到端冒烟（需先 make run-api）
+	@$(PYTHON) scripts/smoke-recharge.py $(if $(BASE),--base $(BASE),)
+
 # ── 前端 ──────────────────────────────────────────
 
 # 前端命令统一走 `env -u NODE_OPTIONS`：沙箱通过 NODE_OPTIONS 注入的 fs shim

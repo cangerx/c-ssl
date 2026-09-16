@@ -86,8 +86,14 @@ func CreateTestUser(t *testing.T, db *sql.DB) int64 {
 // 导出是为了让「用户由被测代码创建」的测试也能清理干净
 // （例如走 HTTP 注册接口建用户的路由级测试）。
 //
-// 删除顺序必须是账本 → 账户 → 用户：wallet_ledger 对 wallet_accounts 是
-// ON DELETE RESTRICT，先删账户会失败。
+// 删除顺序是被外键定死的，不能随意调整：
+//
+//	payment_transactions → recharge_orders → wallet_ledger → wallet_accounts
+//	→ user_sessions → users
+//
+// payment_transactions 对 recharge_orders 是 ON DELETE RESTRICT，
+// 而 recharge_orders 与 wallet_ledger 的父行也都不允许在有子行时被删。
+// 顺序错了会得到外键错误，清理不干净会污染后续测试。
 //
 // 这里直接删除账本流水，仅因为这是测试库、且目的是不留下垃圾数据。
 // 生产环境的账本只追加、永不删除，这条规则由 wallet.Repository 的 API 面保证
@@ -96,6 +102,8 @@ func CleanupUser(t *testing.T, db *sql.DB, userID int64) {
 	t.Helper()
 
 	statements := []string{
+		`DELETE FROM payment_transactions WHERE user_id = ?`,
+		`DELETE FROM recharge_orders WHERE user_id = ?`,
 		`DELETE FROM wallet_ledger WHERE user_id = ?`,
 		`DELETE FROM wallet_accounts WHERE user_id = ?`,
 		`DELETE FROM user_sessions WHERE user_id = ?`,

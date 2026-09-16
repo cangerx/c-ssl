@@ -76,11 +76,13 @@ func Version(ctx context.Context, db *sql.DB) (string, error) {
 
 // MySQL 服务端错误码。
 //
-// 集中在这里是因为「哪些错误值得重试」是 MySQL 的领域知识，
+// 集中在这里是因为「哪些错误值得重试」「哪些错误代表重复键」是 MySQL 的领域知识，
 // 仓储层与事务管理器都需要判断，不该各自抄一份常量。
 const (
-	ErrCodeDeadlock    = 1213 // Deadlock found when trying to get lock
-	ErrCodeLockTimeout = 1205 // Lock wait timeout exceeded
+	ErrCodeDeadlock            = 1213 // Deadlock found when trying to get lock
+	ErrCodeLockTimeout         = 1205 // Lock wait timeout exceeded
+	ErrCodeDuplicateEntry      = 1062 // Duplicate entry for key
+	ErrCodeForeignKeyViolation = 1452 // Cannot add or update a child row
 )
 
 // IsRetryable 判断错误是否值得重试。
@@ -89,9 +91,35 @@ const (
 // 业务错误（余额不足、唯一键冲突）绝不重试——重试改变不了结果，
 // 还会把本该立刻返回的错误拖成超时。
 func IsRetryable(err error) bool {
+	return hasServerCode(err, ErrCodeDeadlock, ErrCodeLockTimeout)
+}
+
+// IsDuplicateKey 判断错误是否为唯一索引冲突。
+//
+// 幂等实现依赖它：重复请求不是「先查再插」拦下的，而是让数据库的唯一索引
+// 直接拒绝，再把这个错误翻译成「这是一次重放」。先查再插中间有竞态窗口，
+// 并发的两次重复请求会双双通过检查。
+func IsDuplicateKey(err error) bool {
+	return hasServerCode(err, ErrCodeDuplicateEntry)
+}
+
+// IsForeignKeyViolation 判断错误是否为外键约束失败。
+//
+// 用途是把「引用了不存在的父行」翻译成明确的业务错误，
+// 而不是让它以 500 的形式冒出去。
+func IsForeignKeyViolation(err error) bool {
+	return hasServerCode(err, ErrCodeForeignKeyViolation)
+}
+
+func hasServerCode(err error, codes ...uint16) bool {
 	var mysqlErr *mysqldriver.MySQLError
 	if !errors.As(err, &mysqlErr) {
 		return false
 	}
-	return mysqlErr.Number == ErrCodeDeadlock || mysqlErr.Number == ErrCodeLockTimeout
+	for _, code := range codes {
+		if mysqlErr.Number == code {
+			return true
+		}
+	}
+	return false
 }

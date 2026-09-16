@@ -40,10 +40,12 @@ func run() error {
 	app.Logger.Info("数据库版本", "mysql_version", app.DBVersion(ctx))
 
 	router := server.NewRouter(server.Deps{
-		Config:  app.Config,
-		DB:      app.DB,
-		Redis:   app.Redis,
-		Version: version.String(),
+		Config:             app.Config,
+		DB:                 app.DB,
+		Redis:              app.Redis,
+		Version:            version.String(),
+		PaymentChannels:    app.PaymentChannels,
+		MockPaymentChannel: app.MockPaymentChannel,
 	})
 	srv := server.NewHTTPServer(app.Config.Addr(), router)
 
