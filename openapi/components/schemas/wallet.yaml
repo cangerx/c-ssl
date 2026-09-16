@@ -1,0 +1,138 @@
+WalletAccount:
+  type: object
+  description: |-
+    钱包账户。金额一律为「分」的整数，不使用浮点也不使用字符串——
+    浮点在资金场景下会产生不可接受的舍入误差。
+
+    `totalBalance` 恒等于 `availableBalance + frozenBalance`，冗余下发是为了
+    让前端不必自己相加（相加逻辑一旦分叉就会出现两个页面对不上）。
+  required: [availableBalance, frozenBalance, totalBalance]
+  properties:
+    availableBalance:
+      type: integer
+      format: int64
+      description: 可用余额，单位分
+      example: 100000
+    frozenBalance:
+      type: integer
+      format: int64
+      description: |-
+        冻结余额，单位分。下单后、支付完成前，对应金额会从可用余额转入冻结余额，
+        总额不变。冻结中的金额不能再次用于下单。
+      example: 21800
+    totalBalance:
+      type: integer
+      format: int64
+      description: 总余额，单位分，等于可用余额与冻结余额之和
+      example: 121800
+
+WalletLedgerEntry:
+  type: object
+  description: |-
+    一条账本流水。账本只追加，写入后永不修改，因此本对象一旦生成就不会再变。
+
+    每条流水都带有记账后的余额快照（`availableAfter` / `frozenAfter`），
+    任何一条都能独立还原当时的账户状态，不必从头累加。
+  required:
+    - id
+    - op
+    - bizType
+    - bizNo
+    - availableDelta
+    - frozenDelta
+    - availableAfter
+    - frozenAfter
+    - remark
+    - createdAt
+  properties:
+    id:
+      type: integer
+      format: int64
+      description: 流水号，全局递增。同时用作分页游标
+      example: 1024
+    op:
+      type: string
+      description: |-
+        操作类型：
+
+        | 取值 | 含义 | 可用余额 | 冻结余额 |
+        |---|---|---|---|
+        | `recharge` | 充值入账 | + | — |
+        | `consume` | 直接扣款 | − | — |
+        | `freeze` | 冻结（下单） | − | + |
+        | `settle` | 结算（支付完成） | — | − |
+        | `unfreeze` | 解冻（订单取消/失败） | + | − |
+        | `refund` | 退款 | + | — |
+
+        `freeze` 是最能说明为何要分别记录两侧变动的例子：可用减少、冻结增加，
+        总额不变，单一金额字段无法表达方向。
+      enum: [recharge, consume, freeze, settle, unfreeze, refund]
+    bizType:
+      type: string
+      description: 业务类型，用于区分同类操作的来源
+      example: cert_order
+    bizNo:
+      type: string
+      description: 业务单号，可据此在业务表里追溯这笔账的来龙去脉
+      example: O20260916000001
+    availableDelta:
+      type: integer
+      format: int64
+      description: 可用余额变动，单位分，可为负
+      example: -21800
+    frozenDelta:
+      type: integer
+      format: int64
+      description: 冻结余额变动，单位分，可为负
+      example: 21800
+    availableAfter:
+      type: integer
+      format: int64
+      description: 记账后的可用余额，单位分
+      example: 78200
+    frozenAfter:
+      type: integer
+      format: int64
+      description: 记账后的冻结余额，单位分
+      example: 21800
+    remark:
+      type: string
+      description: 备注，无备注时为空字符串
+      example: ""
+    createdAt:
+      type: string
+      format: date-time
+
+WalletAccountResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/WalletAccount'
+
+WalletLedgerResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, nextCursor]
+          properties:
+            items:
+              type: array
+              description: 按流水号倒序排列，最新的在最前
+              items:
+                $ref: '#/WalletLedgerEntry'
+            nextCursor:
+              type: integer
+              format: int64
+              nullable: true
+              description: |-
+                下一页游标，取自本页最后一条的 `id`；为 `null` 表示没有更多数据。
+
+                用游标而不是页码：账本持续追加，按页码翻页会漏记录或重复。
+              example: 1005

@@ -135,6 +135,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/wallet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询钱包余额
+         * @description 返回当前登录用户的可用余额、冻结余额与总余额，单位均为分。
+         *
+         *     从未产生过资金往来的用户也会正常返回，各项为 0——
+         *     「余额为 0」是正确状态，不是资源不存在，因此不会返回 404。
+         *
+         *     **本接口只读，不会创建账户。** 账户在首次发生资金变动时按需创建。
+         */
+        get: operations["getWallet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wallet/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询账本流水
+         * @description 按流水号倒序分页返回当前用户的账本流水，最新的在最前。
+         *
+         *     账本只追加、永不修改，因此每条流水的字段一经写入就不会再变，
+         *     客户端可以安全地缓存已获取的条目。
+         *
+         *     **翻页请使用响应中的 `nextCursor`，不要自行用 `id` 做算术。**
+         *     `nextCursor` 为 `null` 即表示已到末页。
+         */
+        get: operations["listWalletLedger"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/products": {
         parameters: {
             query?: never;
@@ -276,6 +327,123 @@ export interface components {
         };
         AuthTokensResponse: components["schemas"]["ApiEnvelope"] & {
             data: components["schemas"]["AuthTokens"];
+        };
+        /**
+         * @description 钱包账户。金额一律为「分」的整数，不使用浮点也不使用字符串——
+         *     浮点在资金场景下会产生不可接受的舍入误差。
+         *
+         *     `totalBalance` 恒等于 `availableBalance + frozenBalance`，冗余下发是为了
+         *     让前端不必自己相加（相加逻辑一旦分叉就会出现两个页面对不上）。
+         */
+        WalletAccount: {
+            /**
+             * Format: int64
+             * @description 可用余额，单位分
+             * @example 100000
+             */
+            availableBalance: number;
+            /**
+             * Format: int64
+             * @description 冻结余额，单位分。下单后、支付完成前，对应金额会从可用余额转入冻结余额，
+             *     总额不变。冻结中的金额不能再次用于下单。
+             * @example 21800
+             */
+            frozenBalance: number;
+            /**
+             * Format: int64
+             * @description 总余额，单位分，等于可用余额与冻结余额之和
+             * @example 121800
+             */
+            totalBalance: number;
+        };
+        /**
+         * @description 一条账本流水。账本只追加，写入后永不修改，因此本对象一旦生成就不会再变。
+         *
+         *     每条流水都带有记账后的余额快照（`availableAfter` / `frozenAfter`），
+         *     任何一条都能独立还原当时的账户状态，不必从头累加。
+         */
+        WalletLedgerEntry: {
+            /**
+             * Format: int64
+             * @description 流水号，全局递增。同时用作分页游标
+             * @example 1024
+             */
+            id: number;
+            /**
+             * @description 操作类型：
+             *
+             *     | 取值 | 含义 | 可用余额 | 冻结余额 |
+             *     |---|---|---|---|
+             *     | `recharge` | 充值入账 | + | — |
+             *     | `consume` | 直接扣款 | − | — |
+             *     | `freeze` | 冻结（下单） | − | + |
+             *     | `settle` | 结算（支付完成） | — | − |
+             *     | `unfreeze` | 解冻（订单取消/失败） | + | − |
+             *     | `refund` | 退款 | + | — |
+             *
+             *     `freeze` 是最能说明为何要分别记录两侧变动的例子：可用减少、冻结增加，
+             *     总额不变，单一金额字段无法表达方向。
+             * @enum {string}
+             */
+            op: "recharge" | "consume" | "freeze" | "settle" | "unfreeze" | "refund";
+            /**
+             * @description 业务类型，用于区分同类操作的来源
+             * @example cert_order
+             */
+            bizType: string;
+            /**
+             * @description 业务单号，可据此在业务表里追溯这笔账的来龙去脉
+             * @example O20260916000001
+             */
+            bizNo: string;
+            /**
+             * Format: int64
+             * @description 可用余额变动，单位分，可为负
+             * @example -21800
+             */
+            availableDelta: number;
+            /**
+             * Format: int64
+             * @description 冻结余额变动，单位分，可为负
+             * @example 21800
+             */
+            frozenDelta: number;
+            /**
+             * Format: int64
+             * @description 记账后的可用余额，单位分
+             * @example 78200
+             */
+            availableAfter: number;
+            /**
+             * Format: int64
+             * @description 记账后的冻结余额，单位分
+             * @example 21800
+             */
+            frozenAfter: number;
+            /**
+             * @description 备注，无备注时为空字符串
+             * @example
+             */
+            remark: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        WalletAccountResponse: components["schemas"]["ApiEnvelope"] & {
+            data: components["schemas"]["WalletAccount"];
+        };
+        WalletLedgerResponse: components["schemas"]["ApiEnvelope"] & {
+            data: {
+                /** @description 按流水号倒序排列，最新的在最前 */
+                items: components["schemas"]["WalletLedgerEntry"][];
+                /**
+                 * Format: int64
+                 * @description 下一页游标，取自本页最后一条的 `id`；为 `null` 表示没有更多数据。
+                 *
+                 *     用游标而不是页码：账本持续追加，按页码翻页会漏记录或重复。
+                 * @example 1005
+                 */
+                nextCursor: number | null;
+            };
         };
         /**
          * @description 产品及其可用规则。前端表单的选项集合必须取自这些字段，
@@ -682,6 +850,61 @@ export interface operations {
                     "application/json": components["schemas"]["MeResponse"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    getWallet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletAccountResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listWalletLedger: {
+        parameters: {
+            query?: {
+                /**
+                 * @description 分页游标，取上一页响应的 `nextCursor`。省略或传 0 表示从最新一条开始。
+                 *     游标语义为「返回流水号小于该值的记录」。
+                 */
+                cursor?: number;
+                /**
+                 * @description 每页条数，默认 20，最大 100。
+                 *     超过 100 会被截断为 100 而不是报错——客户端只是想要更多数据，
+                 *     没必要让它失败，但服务端必须守住资源上限。
+                 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletLedgerResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
         };
     };

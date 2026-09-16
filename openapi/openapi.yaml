@@ -35,6 +35,8 @@ tags:
     description: 注册、登录与令牌刷新
   - name: me
     description: 当前登录用户
+  - name: wallet
+    description: 钱包余额与账本流水
   - name: products
     description: 产品目录与可用规则
 
@@ -59,6 +61,12 @@ paths:
 
   /me:
     $ref: './paths/me.yaml#/me'
+
+  /wallet:
+    $ref: './paths/wallet.yaml#/wallet'
+
+  /wallet/ledger:
+    $ref: './paths/wallet.yaml#/ledger'
 
   /products:
     $ref: './paths/products.yaml#/list'
@@ -102,6 +110,18 @@ components:
 
     AuthTokensResponse:
       $ref: './components/schemas/user.yaml#/AuthTokensResponse'
+
+    WalletAccount:
+      $ref: './components/schemas/wallet.yaml#/WalletAccount'
+
+    WalletLedgerEntry:
+      $ref: './components/schemas/wallet.yaml#/WalletLedgerEntry'
+
+    WalletAccountResponse:
+      $ref: './components/schemas/wallet.yaml#/WalletAccountResponse'
+
+    WalletLedgerResponse:
+      $ref: './components/schemas/wallet.yaml#/WalletLedgerResponse'
 
     Product:
       $ref: './components/schemas/product.yaml#/Product'

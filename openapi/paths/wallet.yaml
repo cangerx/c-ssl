@@ -1,0 +1,70 @@
+wallet:
+  get:
+    tags: [wallet]
+    summary: 查询钱包余额
+    description: |-
+      返回当前登录用户的可用余额、冻结余额与总余额，单位均为分。
+
+      从未产生过资金往来的用户也会正常返回，各项为 0——
+      「余额为 0」是正确状态，不是资源不存在，因此不会返回 404。
+
+      **本接口只读，不会创建账户。** 账户在首次发生资金变动时按需创建。
+    operationId: getWallet
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/wallet.yaml#/WalletAccountResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+
+ledger:
+  get:
+    tags: [wallet]
+    summary: 查询账本流水
+    description: |-
+      按流水号倒序分页返回当前用户的账本流水，最新的在最前。
+
+      账本只追加、永不修改，因此每条流水的字段一经写入就不会再变，
+      客户端可以安全地缓存已获取的条目。
+
+      **翻页请使用响应中的 `nextCursor`，不要自行用 `id` 做算术。**
+      `nextCursor` 为 `null` 即表示已到末页。
+    operationId: listWalletLedger
+    parameters:
+      - name: cursor
+        in: query
+        required: false
+        description: |-
+          分页游标，取上一页响应的 `nextCursor`。省略或传 0 表示从最新一条开始。
+          游标语义为「返回流水号小于该值的记录」。
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        description: |-
+          每页条数，默认 20，最大 100。
+          超过 100 会被截断为 100 而不是报错——客户端只是想要更多数据，
+          没必要让它失败，但服务端必须守住资源上限。
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/wallet.yaml#/WalletLedgerResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
