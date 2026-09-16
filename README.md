@@ -64,8 +64,7 @@ make web PORT=3001        # 3000 被占用时换端口
 
 ## 当前状态
 
-**Phase 0 已完成。** 全链路已验证：MySQL → Go API → Umi 代理 → 后台 ProTable，
-以及 Next.js 服务端组件渲染，均取到真实数据库数据。
+**Phase 0 已完成，Phase 1 进行中。**
 
 已完成：
 
@@ -73,11 +72,14 @@ make web PORT=3001        # 3000 被占用时换端口
 |---|---|
 | 环境 | 工具链自检、MySQL 建库建用户、Redis 独立 db1、迁移与 lint 工具安装 |
 | 配置 | 根配置文件、`Makefile`、CI 工作流、环境变量样例 |
-| 契约 | OpenAPI 3.0.3 多文件契约（7 接口、30 处 `$ref`）、`packages/api-types` 类型生成与漂移检测 |
+| 契约 | OpenAPI 3.0.3 多文件契约（8 接口、31 处 `$ref`）、`packages/api-types` 类型生成与漂移检测 |
 | 后端 | 三入口（api/worker/cron）、配置加载、日志脱敏、MySQL/Redis 探活、统一响应外壳、Trace 透传 |
-| 业务 | 产品域垂直切片 + `internal/product/rules` 规则真源；users / products / product_prices 迁移与种子数据 |
+| 业务 | 产品域垂直切片 + `internal/product/rules` 规则真源；**认证域**（注册/登录/刷新/退出/me） |
 | 前端 | `apps/admin`（ProTable 产品列表）、`apps/web`（产品卡片） |
 
-下一步（Phase 1）：认证与会员、钱包与充值、订单与 DCV 流程。
+Phase 1 剩余部分：钱包账户与不可变账本、充值订单与支付回调幂等。
+
+认证域的安全设计（Argon2id、刷新令牌轮换与重放检测、双重限流、账号锁定）
+见 [仓库与目录结构设计 §11](docs/仓库与目录结构设计.md)。
 
 接口契约在 `openapi/openapi.yaml`，是前后端字段的唯一真源。
