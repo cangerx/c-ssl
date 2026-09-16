@@ -9,25 +9,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
-  # pnpm 的全局缓存位置，配合 actions/setup-node 的 pnpm 缓存
   NODE_VERSION: "22"
   GO_VERSION: "1.26"
+  # 与本地 `golangci-lint --version` 对齐，避免 CI 与本地结论不一致。
+  # 注意：golangci-lint 2.x 必须配 golangci-lint-action v7 及以上。
+  GOLANGCI_LINT_VERSION: "v2.13.2"
 
 jobs:
   contract:
     name: 契约校验
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # 先装 pnpm 再装 node，这样 setup-node 才能缓存 pnpm store。
+      # 不要给 action 传 version：版本由 package.json 的 packageManager 决定，
+      # 两处同时指定会报 ERR_PNPM_BAD_PM_VERSION。
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+          cache: pnpm
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
@@ -51,9 +58,9 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: server/go.sum
@@ -68,7 +75,7 @@ jobs:
         run: go test ./... -race -count=1
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           working-directory: server
