@@ -68,6 +68,15 @@ paths:
   /wallet/ledger:
     $ref: './paths/wallet.yaml#/ledger'
 
+  /recharge/orders:
+    $ref: './paths/recharge.yaml#/orders'
+
+  /payments/webhook/{channel}:
+    $ref: './paths/payments.yaml#/webhook'
+
+  /payments/mock/notify:
+    $ref: './paths/payments.yaml#/mockNotify'
+
   /products:
     $ref: './paths/products.yaml#/list'
 
@@ -153,3 +162,5 @@ components:
       $ref: './components/responses.yaml#/InternalError'
     ServiceUnavailable:
       $ref: './components/responses.yaml#/ServiceUnavailable'
+    BadGateway:
+      $ref: './components/responses.yaml#/BadGateway'

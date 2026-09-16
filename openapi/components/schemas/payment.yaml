@@ -1,0 +1,74 @@
+PaymentNotification:
+  type: object
+  description: |-
+    Mock 渠道的回调报文。真实渠道的报文字段名各不相同，
+    解析与验签都由各渠道的适配器负责，本服务内部统一映射为一种结构。
+
+    金额由渠道回执给出，服务端会与订单金额逐分比对，不一致直接拒绝。
+    这是防止「用 1 分钱的支付回调核销一张 1000 元充值单」的关键一步。
+  required: [channelTradeNo, orderNo, amount, status]
+  properties:
+    channelTradeNo:
+      type: string
+      description: |-
+        渠道交易号，渠道侧对这次支付的唯一标识。
+        它是幂等键的一半（另一半是渠道标识），建唯一索引。
+      example: MOCK-TRADE-20260916-0001
+    channelOrderNo:
+      type: string
+      description: 渠道侧订单号
+      example: MOCK-ORDER-20260916-0001
+    orderNo:
+      type: string
+      description: 平台充值单号，回执此字段以告知是哪张订单被支付
+      example: RC20260916191234A7K3M9
+    amount:
+      type: integer
+      format: int64
+      description: 渠道实收金额，单位分。必须与订单金额完全相等
+      example: 10000
+    status:
+      type: string
+      enum: [success, failed]
+      description: |-
+        支付结果。同一个渠道交易号的结果是确定的，
+        不会先 `failed` 后 `success`——因此重放直接返回成功，不再重新处理。
+      example: success
+    paidAt:
+      type: string
+      format: date-time
+      nullable: true
+      description: 渠道记录的支付时间，缺失时服务端以本地时间兜底
+      example: '2026-09-16T19:12:34Z'
+
+PaymentWebhookAck:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      description: |-
+        Mock 渠道的成功应答，即服务的统一信封。
+
+        真实渠道的应答格式由渠道适配器决定，与本 schema 无关——
+        详见 `POST /payments/webhook/{channel}` 的说明。
+
+MockNotifyRequest:
+  type: object
+  required: [orderNo]
+  properties:
+    orderNo:
+      type: string
+      description: 要模拟支付的平台充值单号
+      example: RC20260916191234A7K3M9
+    status:
+      type: string
+      enum: [success, failed]
+      default: success
+      description: 要模拟的支付结果
+    channelTradeNo:
+      type: string
+      description: |-
+        渠道交易号，省略时自动生成。
+
+        显式传入同一个交易号可以验证幂等：第二次调用会命中唯一索引，
+        直接返回成功且不再加款。
+      example: MOCK-TRADE-20260916-0001

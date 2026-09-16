@@ -186,6 +186,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/recharge/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询充值订单
+         * @description 按订单 ID 倒序分页返回当前用户的充值订单，最新的在最前。
+         *
+         *     **翻页请使用响应中的 `nextCursor`。** 为 `null` 即表示已到末页。
+         */
+        get: operations["listRechargeOrders"];
+        put?: never;
+        /**
+         * 创建充值订单
+         * @description 创建一张充值订单并返回支付地址，用户在 `payUrl` 完成支付。
+         *
+         *     **本接口不产生任何余额变动。** 加款只发生在渠道回调到达并通过验签之后，
+         *     见 `POST /payments/webhook/{channel}`。
+         *
+         *     订单在 `expiresAt` 之后失效。过期订单即使收到渠道回调也不会入账，
+         *     需要人工核对处理——渠道的支付结果不可信地晚到时，
+         *     自动入账会把一笔已经对不上的钱塞进账本。
+         */
+        post: operations["createRechargeOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payments/webhook/{channel}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 支付渠道回调
+         * @description 支付渠道在用户完成支付后调用本接口通知支付结果。
+         *
+         *     **本接口不使用 Bearer 令牌鉴权**，调用方是渠道服务器而不是用户。
+         *     唯一的身份凭证是 `X-Webhook-Signature` 请求头：对**原始请求体字节**
+         *     做 HMAC-SHA256 后 Base64 编码。
+         *
+         *     验签在解析请求体之前完成，验签失败时不会读取、更不会修改任何业务数据，
+         *     直接返回 401。
+         *
+         *     ## 幂等
+         *
+         *     渠道在未收到成功应答时会重复投递同一次通知，因此本接口必须幂等。
+         *     幂等键是「渠道 + 渠道交易号」上的唯一索引，重复投递会命中该索引并
+         *     直接返回成功，不会重复入账。
+         *
+         *     同一渠道交易号如果被用在另一张订单或另一个金额上，会返回 400 而不是
+         *     静默成功——那说明渠道串单或有人在伪造，必须让人看到。
+         *
+         *     ## 应答格式
+         *
+         *     应答体由渠道决定，不是本服务的统一信封：真实渠道各有各的成功标识
+         *     （微信支付要 `{"code":"SUCCESS"}`，支付宝要纯文本 `success`），
+         *     返回统一信封会被判为失败并触发无限重试。
+         */
+        post: operations["handlePaymentWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payments/mock/notify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 模拟渠道发送回调（仅开发环境）
+         * @description **仅在 `APP_ENV=development` 时注册，其他环境访问返回 404。**
+         *
+         *     开发环境没有真实支付渠道，本接口替代人工计算 HMAC 签名：
+         *     它按 Mock 渠道的格式构造回调报文、用同一个密钥签名，
+         *     然后走与真实回调完全相同的处理路径（包括验签与幂等）。
+         *
+         *     重复调用同一个订单会命中幂等闸门，余额只增加一次。
+         */
+        post: operations["mockPaymentNotify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/products": {
         parameters: {
             query?: never;
@@ -569,6 +670,163 @@ export interface components {
             error?: string | null;
         };
         /**
+         * @description 一张用户充值订单。金额一律为「分」的整数。
+         *
+         *     订单状态机只有四个状态，且 `paid` / `failed` / `closed` 都是终态：
+         *
+         *     | 状态 | 含义 | 可迁移到 |
+         *     |---|---|---|
+         *     | `pending` | 已创建，等待用户支付 | `paid` / `failed` / `closed` |
+         *     | `paid` | 支付成功，钱包已加款 | — |
+         *     | `failed` | 渠道明确返回支付失败 | — |
+         *     | `closed` | 超时未支付，已关闭 | — |
+         *
+         *     终态不可回退。用户重新发起支付会得到一张新的订单，
+         *     而不是把旧订单改回 `pending`——否则订单号与渠道流水就失去了对应关系，
+         *     对账时无法回答「这笔钱对应哪次支付」。
+         */
+        RechargeOrder: {
+            /**
+             * @description 平台充值单号，形如 `RC20260916191234A7K3M9`
+             * @example RC20260916191234A7K3M9
+             */
+            orderNo: string;
+            /**
+             * Format: int64
+             * @description 充值金额，单位分
+             * @example 10000
+             */
+            amount: number;
+            /**
+             * @description 订单状态
+             * @example pending
+             * @enum {string}
+             */
+            status: "pending" | "paid" | "failed" | "closed";
+            /**
+             * @description 支付渠道标识
+             * @example mock
+             */
+            channel: string;
+            /**
+             * @description 支付跳转地址。用户在此完成支付，渠道随后回调本服务。
+             *
+             *     订单进入终态后该字段不再有意义，但仍会原样返回，便于排查。
+             * @example http://localhost:8080/mock-pay?orderNo=RC20260916191234A7K3M9
+             */
+            payUrl: string;
+            /**
+             * Format: date-time
+             * @description 支付成功时间，未支付时为 `null`
+             */
+            paidAt?: string | null;
+            /**
+             * Format: date-time
+             * @description 订单过期时间。过期后渠道再回调也不会入账——
+             *     渠道的支付结果不可信地晚到，超时单必须由人工介入而不是自动入账。
+             */
+            expiresAt: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        RechargeOrderListResponse: components["schemas"]["ApiEnvelope"] & {
+            data: {
+                /** @description 按订单 ID 倒序排列，最新的在最前 */
+                items: components["schemas"]["RechargeOrder"][];
+                /**
+                 * Format: int64
+                 * @description 下一页游标，为 `null` 表示没有更多数据
+                 * @example 42
+                 */
+                nextCursor: number | null;
+            };
+        };
+        CreateRechargeOrderRequest: {
+            /**
+             * Format: int64
+             * @description 充值金额，单位分。最小 100 分（1 元），最大 10000000 分（10 万元）。
+             *
+             *     上下限是服务端的硬约束，不依赖前端限制——前端可以被绕过。
+             * @example 10000
+             */
+            amount: number;
+            /**
+             * @description 支付渠道标识，省略时使用服务端配置的默认渠道。
+             *     传入未注册的渠道会返回 1000。
+             * @example mock
+             */
+            channel?: string;
+        };
+        RechargeOrderResponse: components["schemas"]["ApiEnvelope"] & {
+            data: components["schemas"]["RechargeOrder"];
+        };
+        /**
+         * @description Mock 渠道的回调报文。真实渠道的报文字段名各不相同，
+         *     解析与验签都由各渠道的适配器负责，本服务内部统一映射为一种结构。
+         *
+         *     金额由渠道回执给出，服务端会与订单金额逐分比对，不一致直接拒绝。
+         *     这是防止「用 1 分钱的支付回调核销一张 1000 元充值单」的关键一步。
+         */
+        PaymentNotification: {
+            /**
+             * @description 渠道交易号，渠道侧对这次支付的唯一标识。
+             *     它是幂等键的一半（另一半是渠道标识），建唯一索引。
+             * @example MOCK-TRADE-20260916-0001
+             */
+            channelTradeNo: string;
+            /**
+             * @description 渠道侧订单号
+             * @example MOCK-ORDER-20260916-0001
+             */
+            channelOrderNo?: string;
+            /**
+             * @description 平台充值单号，回执此字段以告知是哪张订单被支付
+             * @example RC20260916191234A7K3M9
+             */
+            orderNo: string;
+            /**
+             * Format: int64
+             * @description 渠道实收金额，单位分。必须与订单金额完全相等
+             * @example 10000
+             */
+            amount: number;
+            /**
+             * @description 支付结果。同一个渠道交易号的结果是确定的，
+             *     不会先 `failed` 后 `success`——因此重放直接返回成功，不再重新处理。
+             * @example success
+             * @enum {string}
+             */
+            status: "success" | "failed";
+            /**
+             * Format: date-time
+             * @description 渠道记录的支付时间，缺失时服务端以本地时间兜底
+             * @example 2026-09-16T19:12:34Z
+             */
+            paidAt?: string | null;
+        };
+        PaymentWebhookAck: components["schemas"]["ApiEnvelope"] & Record<string, never>;
+        MockNotifyRequest: {
+            /**
+             * @description 要模拟支付的平台充值单号
+             * @example RC20260916191234A7K3M9
+             */
+            orderNo: string;
+            /**
+             * @description 要模拟的支付结果
+             * @default success
+             * @enum {string}
+             */
+            status: "success" | "failed";
+            /**
+             * @description 渠道交易号，省略时自动生成。
+             *
+             *     显式传入同一个交易号可以验证幂等：第二次调用会命中唯一索引，
+             *     直接返回成功且不再加款。
+             * @example MOCK-TRADE-20260916-0001
+             */
+            channelTradeNo?: string;
+        };
+        /**
          * @description 证书密钥算法
          * @enum {string}
          */
@@ -691,6 +949,22 @@ export interface components {
                  *           "error": "connection refused"
                  *         }
                  *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorResponse"];
+            };
+        };
+        /** @description 上游服务错误（code 3000） */
+        BadGateway: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "code": 3000,
+                 *       "message": "上游服务暂时不可用",
+                 *       "data": null
                  *     }
                  */
                 "application/json": components["schemas"]["ErrorResponse"];
@@ -906,6 +1180,150 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listRechargeOrders: {
+        parameters: {
+            query?: {
+                /** @description 分页游标，取上一页响应的 `nextCursor`。省略或传 0 表示从最新一条开始。 */
+                cursor?: number;
+                /**
+                 * @description 每页条数，默认 20，最大 100。
+                 *     超过 100 会被截断为 100 而不是报错，与钱包账本接口一致。
+                 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RechargeOrderListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createRechargeOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRechargeOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 创建成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RechargeOrderResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    handlePaymentWebhook: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 对原始请求体字节做 HMAC-SHA256 后 Base64 编码的签名。
+                 *
+                 *     必须对**原始字节**验签。先反序列化再重新序列化会改变字节
+                 *     （键顺序、空白、数字格式），导致验签必然失败或产生可绕过的实现。
+                 */
+                "X-Webhook-Signature": string;
+            };
+            path: {
+                /**
+                 * @description 支付渠道标识。未注册的渠道返回 404。
+                 * @example mock
+                 */
+                channel: string;
+            };
+            cookie?: never;
+        };
+        /** @description 渠道原始回调报文，格式由渠道决定 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaymentNotification"];
+            };
+        };
+        responses: {
+            /** @description 处理成功，渠道可停止重试 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentWebhookAck"];
+                };
+            };
+            /**
+             * @description 报文格式错误，或同一渠道交易号被用在内容不同的请求上（code 1000）。
+             *     渠道会重试，但重试改变不了结果，需要人工核对。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 签名校验失败（code 1001）。**订单与钱包数据均未被修改。** */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    mockPaymentNotify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MockNotifyRequest"];
+            };
+        };
+        responses: {
+            /** @description 处理成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentWebhookAck"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
         };
     };
     listProducts: {

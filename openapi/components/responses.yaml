@@ -79,3 +79,14 @@ ServiceUnavailable:
           mysql:
             ok: false
             error: connection refused
+
+BadGateway:
+  description: 上游服务错误（code 3000）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 3000
+        message: 上游服务暂时不可用
+        data: null

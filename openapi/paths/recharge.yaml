@@ -1,0 +1,74 @@
+orders:
+  post:
+    tags: [recharge]
+    summary: 创建充值订单
+    description: |-
+      创建一张充值订单并返回支付地址，用户在 `payUrl` 完成支付。
+
+      **本接口不产生任何余额变动。** 加款只发生在渠道回调到达并通过验签之后，
+      见 `POST /payments/webhook/{channel}`。
+
+      订单在 `expiresAt` 之后失效。过期订单即使收到渠道回调也不会入账，
+      需要人工核对处理——渠道的支付结果不可信地晚到时，
+      自动入账会把一笔已经对不上的钱塞进账本。
+    operationId: createRechargeOrder
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/recharge.yaml#/CreateRechargeOrderRequest'
+    responses:
+      '200':
+        description: 创建成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/recharge.yaml#/RechargeOrderResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+  get:
+    tags: [recharge]
+    summary: 查询充值订单
+    description: |-
+      按订单 ID 倒序分页返回当前用户的充值订单，最新的在最前。
+
+      **翻页请使用响应中的 `nextCursor`。** 为 `null` 即表示已到末页。
+    operationId: listRechargeOrders
+    parameters:
+      - name: cursor
+        in: query
+        required: false
+        description: 分页游标，取上一页响应的 `nextCursor`。省略或传 0 表示从最新一条开始。
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        description: |-
+          每页条数，默认 20，最大 100。
+          超过 100 会被截断为 100 而不是报错，与钱包账本接口一致。
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/recharge.yaml#/RechargeOrderListResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'

@@ -1,0 +1,111 @@
+webhook:
+  post:
+    tags: [payments]
+    summary: 支付渠道回调
+    description: |-
+      支付渠道在用户完成支付后调用本接口通知支付结果。
+
+      **本接口不使用 Bearer 令牌鉴权**，调用方是渠道服务器而不是用户。
+      唯一的身份凭证是 `X-Webhook-Signature` 请求头：对**原始请求体字节**
+      做 HMAC-SHA256 后 Base64 编码。
+
+      验签在解析请求体之前完成，验签失败时不会读取、更不会修改任何业务数据，
+      直接返回 401。
+
+      ## 幂等
+
+      渠道在未收到成功应答时会重复投递同一次通知，因此本接口必须幂等。
+      幂等键是「渠道 + 渠道交易号」上的唯一索引，重复投递会命中该索引并
+      直接返回成功，不会重复入账。
+
+      同一渠道交易号如果被用在另一张订单或另一个金额上，会返回 400 而不是
+      静默成功——那说明渠道串单或有人在伪造，必须让人看到。
+
+      ## 应答格式
+
+      应答体由渠道决定，不是本服务的统一信封：真实渠道各有各的成功标识
+      （微信支付要 `{"code":"SUCCESS"}`，支付宝要纯文本 `success`），
+      返回统一信封会被判为失败并触发无限重试。
+    operationId: handlePaymentWebhook
+    security: []
+    parameters:
+      - name: channel
+        in: path
+        required: true
+        description: 支付渠道标识。未注册的渠道返回 404。
+        schema:
+          type: string
+        example: mock
+      - name: X-Webhook-Signature
+        in: header
+        required: true
+        description: |-
+          对原始请求体字节做 HMAC-SHA256 后 Base64 编码的签名。
+
+          必须对**原始字节**验签。先反序列化再重新序列化会改变字节
+          （键顺序、空白、数字格式），导致验签必然失败或产生可绕过的实现。
+        schema:
+          type: string
+    requestBody:
+      required: true
+      description: 渠道原始回调报文，格式由渠道决定
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/payment.yaml#/PaymentNotification'
+    responses:
+      '200':
+        description: 处理成功，渠道可停止重试
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/payment.yaml#/PaymentWebhookAck'
+      '400':
+        description: |-
+          报文格式错误，或同一渠道交易号被用在内容不同的请求上（code 1000）。
+          渠道会重试，但重试改变不了结果，需要人工核对。
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '401':
+        description: |-
+          签名校验失败（code 1001）。**订单与钱包数据均未被修改。**
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+
+mockNotify:
+  post:
+    tags: [payments]
+    summary: 模拟渠道发送回调（仅开发环境）
+    description: |-
+      **仅在 `APP_ENV=development` 时注册，其他环境访问返回 404。**
+
+      开发环境没有真实支付渠道，本接口替代人工计算 HMAC 签名：
+      它按 Mock 渠道的格式构造回调报文、用同一个密钥签名，
+      然后走与真实回调完全相同的处理路径（包括验签与幂等）。
+
+      重复调用同一个订单会命中幂等闸门，余额只增加一次。
+    operationId: mockPaymentNotify
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/payment.yaml#/MockNotifyRequest'
+    responses:
+      '200':
+        description: 处理成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/payment.yaml#/PaymentWebhookAck'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'

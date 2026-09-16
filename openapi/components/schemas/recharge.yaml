@@ -1,0 +1,110 @@
+RechargeOrder:
+  type: object
+  description: |-
+    一张用户充值订单。金额一律为「分」的整数。
+
+    订单状态机只有四个状态，且 `paid` / `failed` / `closed` 都是终态：
+
+    | 状态 | 含义 | 可迁移到 |
+    |---|---|---|
+    | `pending` | 已创建，等待用户支付 | `paid` / `failed` / `closed` |
+    | `paid` | 支付成功，钱包已加款 | — |
+    | `failed` | 渠道明确返回支付失败 | — |
+    | `closed` | 超时未支付，已关闭 | — |
+
+    终态不可回退。用户重新发起支付会得到一张新的订单，
+    而不是把旧订单改回 `pending`——否则订单号与渠道流水就失去了对应关系，
+    对账时无法回答「这笔钱对应哪次支付」。
+  required: [orderNo, amount, status, channel, payUrl, expiresAt, createdAt]
+  properties:
+    orderNo:
+      type: string
+      description: 平台充值单号，形如 `RC20260916191234A7K3M9`
+      example: RC20260916191234A7K3M9
+    amount:
+      type: integer
+      format: int64
+      description: 充值金额，单位分
+      example: 10000
+    status:
+      type: string
+      enum: [pending, paid, failed, closed]
+      description: 订单状态
+      example: pending
+    channel:
+      type: string
+      description: 支付渠道标识
+      example: mock
+    payUrl:
+      type: string
+      description: |-
+        支付跳转地址。用户在此完成支付，渠道随后回调本服务。
+
+        订单进入终态后该字段不再有意义，但仍会原样返回，便于排查。
+      example: http://localhost:8080/mock-pay?orderNo=RC20260916191234A7K3M9
+    paidAt:
+      type: string
+      format: date-time
+      nullable: true
+      description: 支付成功时间，未支付时为 `null`
+    expiresAt:
+      type: string
+      format: date-time
+      description: |-
+        订单过期时间。过期后渠道再回调也不会入账——
+        渠道的支付结果不可信地晚到，超时单必须由人工介入而不是自动入账。
+    createdAt:
+      type: string
+      format: date-time
+
+CreateRechargeOrderRequest:
+  type: object
+  required: [amount]
+  properties:
+    amount:
+      type: integer
+      format: int64
+      minimum: 100
+      maximum: 10000000
+      description: |-
+        充值金额，单位分。最小 100 分（1 元），最大 10000000 分（10 万元）。
+
+        上下限是服务端的硬约束，不依赖前端限制——前端可以被绕过。
+      example: 10000
+    channel:
+      type: string
+      description: |-
+        支付渠道标识，省略时使用服务端配置的默认渠道。
+        传入未注册的渠道会返回 1000。
+      example: mock
+
+RechargeOrderResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/RechargeOrder'
+
+RechargeOrderListResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, nextCursor]
+          properties:
+            items:
+              type: array
+              description: 按订单 ID 倒序排列，最新的在最前
+              items:
+                $ref: '#/RechargeOrder'
+            nextCursor:
+              type: integer
+              format: int64
+              nullable: true
+              description: 下一页游标，为 `null` 表示没有更多数据
+              example: 42
