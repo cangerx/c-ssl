@@ -30,6 +30,11 @@ BASE = args.base.rstrip("/") + "/api/v1"
 stamp = str(int(time.time()))
 passed, failed = [], []
 
+# 显式禁用代理。脚本打的是本机服务，而开发机上常设着 HTTP_PROXY；
+# 走代理会被转发到一个不认识 127.0.0.1:8080 的中间层，
+# 得到与业务毫无关系的 502，排查时非常费解。
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def call(method, path, body=None, token=None):
     req = urllib.request.Request(BASE + path, method=method)
@@ -38,7 +43,7 @@ def call(method, path, body=None, token=None):
         req.add_header("Authorization", "Bearer " + token)
     data = json.dumps(body).encode() if body is not None else None
     try:
-        with urllib.request.urlopen(req, data) as resp:
+        with OPENER.open(req, data) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raw = e.read()
