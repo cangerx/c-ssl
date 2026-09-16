@@ -139,6 +139,13 @@ func (c *Config) LogSummary() []any {
 
 // ── .env 加载 ──────────────────────────────────────
 
+// LoadDotEnv 把最近的 .env 加载进进程环境变量（已存在的变量不覆盖），
+// 返回实际加载的文件路径，未找到时返回空串。
+//
+// 供测试与脚本使用：测试进程的工作目录是各自的包目录，需要向上查找仓库根目录。
+// 服务启动走 Load，它内部也会调用本函数。
+func LoadDotEnv() (string, error) { return loadDotEnv() }
+
 // loadDotEnv 从当前目录向上查找 .env，最多 4 层。
 // 返回找到的文件路径；未找到返回空串且不报错。
 func loadDotEnv() (string, error) {

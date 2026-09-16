@@ -5,12 +5,27 @@ GOBIN      := $(shell go env GOPATH 2>/dev/null)/bin
 MIGRATE    := $(shell command -v migrate 2>/dev/null || echo $(GOBIN)/migrate)
 MIGRATIONS := server/migrations
 
-MYSQL_DSN   := $(shell [ -f .env ] && grep -E '^MYSQL_DSN=' .env | head -1 | cut -d= -f2-)
+# 配置取值优先级：进程环境变量 > .env 文件。
+# CI 通过环境变量注入（仓库里没有 .env 文件），本地开发写在 .env 里。
+#
+# 写法说明：$$$(1) 展开后交给 shell 的是 $VAR，读的是进程环境变量本身，
+# 而不是 make 变量——这样不受后面 := 赋值的先后顺序影响。
+define env_or_dotenv
+$(shell if [ -n "$$$(1)" ]; then echo "$$$(1)"; elif [ -f .env ]; then grep -E '^$(1)=' .env | head -1 | cut -d= -f2-; fi)
+endef
+
+MYSQL_DSN := $(call env_or_dotenv,MYSQL_DSN)
 # 迁移连接串单独构造：golang-migrate 会把整个 .sql 文件当一条语句执行，
 # 必须带 multiStatements=true。应用自身的 DSN 不加这个参数，避免放大注入风险。
 MYSQL_DSN_BASE := $(firstword $(subst ?, ,$(MYSQL_DSN)))
 MIGRATE_URL    := $(if $(MYSQL_DSN_BASE),mysql://$(MYSQL_DSN_BASE)?multiStatements=true,)
-REDIS_DB    := $(shell [ -f .env ] && grep -E '^REDIS_DB=' .env | head -1 | cut -d= -f2-)
+
+# 测试库（c_ssl_test）单独迁移：需要数据库的测试跑在它上面，不碰开发数据。
+MYSQL_TEST_DSN      := $(call env_or_dotenv,MYSQL_TEST_DSN)
+MYSQL_TEST_DSN_BASE := $(firstword $(subst ?, ,$(MYSQL_TEST_DSN)))
+MIGRATE_TEST_URL    := $(if $(MYSQL_TEST_DSN_BASE),mysql://$(MYSQL_TEST_DSN_BASE)?multiStatements=true,)
+
+REDIS_DB := $(call env_or_dotenv,REDIS_DB)
 
 # 契约校验脚本需要 PyYAML，优先用项目虚拟环境
 PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
@@ -62,7 +77,7 @@ spec-check: ## 校验 OpenAPI 契约（$ref 完整性 + operationId 唯一性）
 .PHONY: check-migrations
 check-migrations:
 	@if [ -z "$(MIGRATE_URL)" ]; then \
-	  echo "错误：.env 中 MYSQL_DSN 未配置。请先执行 make db-create。"; exit 1; fi
+	  echo "错误：MYSQL_DSN 未配置（既不在环境变量中，也不在 .env 中）。请先执行 make db-create。"; exit 1; fi
 	@if [ ! -d "$(MIGRATIONS)" ]; then \
 	  echo "错误：目录 $(MIGRATIONS) 不存在。Phase 0 尚未生成迁移文件。"; exit 1; fi
 
@@ -88,6 +103,25 @@ migrate-create: ## 新建迁移文件（需 name=xxx）
 	@if [ -z "$(name)" ]; then echo "用法：make migrate-create name=create_users"; exit 1; fi
 	@mkdir -p $(MIGRATIONS)
 	@$(MIGRATE) create -ext sql -dir $(MIGRATIONS) -seq $(name)
+
+# ── 测试库迁移 ────────────────────────────────────
+#
+# 需要真实数据库的测试（钱包域的并发、幂等、对账）跑在 c_ssl_test 上。
+# 单独建目标而不是复用开发库：测试会写数据、会绕过应用直接改库构造脏数据，
+# 跑在开发库上迟早会毁掉手头的调试现场。
+
+.PHONY: check-migrations-test
+check-migrations-test:
+	@if [ -z "$(MIGRATE_TEST_URL)" ]; then \
+	  echo "错误：MYSQL_TEST_DSN 未配置（既不在环境变量中，也不在 .env 中）。请先执行 make db-create。"; exit 1; fi
+
+.PHONY: migrate-test-up
+migrate-test-up: check-migrations-test ## 把测试库迁移到最新版本
+	@$(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_TEST_URL)" up
+
+.PHONY: migrate-test-down
+migrate-test-down: check-migrations-test ## 回滚测试库最近一次迁移
+	@$(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_TEST_URL)" down 1
 
 # ── Go 服务 ───────────────────────────────────────
 
@@ -121,7 +155,11 @@ lint: check-server fmt-check ## 静态检查（含 gofmt 格式校验）
 	@cd server && golangci-lint run ./...
 
 .PHONY: test
-test: check-server ## 单元测试
+test: check-server ## 单元测试（需要数据库的用例在测试库不可用时自动跳过）
+	@cd server && go test ./... -race -count=1
+
+.PHONY: test-db
+test-db: check-server migrate-test-up ## 完整测试：先迁移测试库，保证数据库用例真的执行
 	@cd server && go test ./... -race -count=1
 
 .PHONY: build

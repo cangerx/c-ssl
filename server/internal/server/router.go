@@ -20,6 +20,7 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/server/httpx"
 	"github.com/cangerx/c-ssl/server/internal/server/middleware"
 	"github.com/cangerx/c-ssl/server/internal/user"
+	"github.com/cangerx/c-ssl/server/internal/wallet"
 )
 
 const (
@@ -72,6 +73,8 @@ func NewRouter(deps Deps) http.Handler {
 		).Routes(r)
 
 		product.NewHandler(product.NewService(product.NewRepository(deps.DB))).Routes(r)
+
+		wallet.NewHandler(wallet.NewService(wallet.NewRepository(deps.DB)), auth).Routes(r)
 	})
 
 	return r
