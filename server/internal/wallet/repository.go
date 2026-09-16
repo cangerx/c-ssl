@@ -6,62 +6,63 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
-
-	// 需要按服务端错误码区分「死锁」与业务失败，故直接依赖驱动的错误类型。
-	// 这是仓储层独有的关注点，不会外泄到服务层。
-	mysqldriver "github.com/go-sql-driver/mysql"
 
 	"github.com/cangerx/c-ssl/server/internal/domain/money"
+	"github.com/cangerx/c-ssl/server/internal/platform/tx"
 )
 
 // Repository 负责钱包账户与账本的数据访问。
 //
 // 本类型刻意只提供「读账户、读账本、追加流水」三类方法，没有任何更新或删除
 // 账本流水的方法。账本的不可变性由这个 API 面保证，而不是靠调用方自觉。
+//
+// 所有读写都经过 tx.Of(ctx, r.db) 取执行器，而不是直接用 r.db：
+// 被跨域事务包裹时（支付回调要同时改订单、加款、写账本），
+// 直接用 r.db 会让这一步脱离事务，产生「回调失败但钱已经加了」的半提交。
 type Repository struct {
-	db *sql.DB
+	db  *sql.DB
+	txm *tx.Manager
 }
 
 // NewRepository 构造仓储。
-func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
+func NewRepository(db *sql.DB) *Repository {
+	return &Repository{db: db, txm: tx.NewManager(db)}
+}
 
 const accountColumns = `id, user_id, available_balance, frozen_balance, version, created_at, updated_at`
 
 const ledgerColumns = `id, account_id, user_id, entry_no, op, biz_type, biz_no,
 	available_delta, frozen_delta, available_after, frozen_after, remark, created_at`
 
-// Apply 在单个事务内完成一次余额变更，并在死锁时重试。
+// Apply 完成一次余额变更。
 //
-// 拆成 applyOnce + 重试两层，是因为间隙锁带来的死锁无法从代码上消除，
-// 只能重试，见 applyMaxAttempts 的说明。
+// 事务边界交给 platform/tx 决定，两种情形行为不同：
+//
+//   - 独立调用（context 中没有事务）：自开事务、负责提交，死锁自动重试；
+//   - 被跨域事务包裹：直接加入外层事务，既不提交也不重试。
+//     重试必须由发起方决定——内层重试会丢掉外层已经做过的改动。
 func (r *Repository) Apply(ctx context.Context, req Request) (*Result, error) {
 	availableDelta, frozenDelta, err := req.Op.Deltas(req.Amount)
 	if err != nil {
 		return nil, err
 	}
 
-	var lastErr error
-	for attempt := 1; attempt <= applyMaxAttempts; attempt++ {
-		result, err := r.applyOnce(ctx, req, availableDelta, frozenDelta)
-		if err == nil {
-			return result, nil
+	var result *Result
+	err = r.txm.Run(ctx, func(ctx context.Context) error {
+		applied, err := r.apply(ctx, tx.Of(ctx, r.db), req, availableDelta, frozenDelta)
+		if err != nil {
+			return err
 		}
-		if !isRetryableApplyError(err) {
-			return nil, err
-		}
-		lastErr = err
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(applyRetryDelay):
-		}
+		result = applied
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("余额变更重试 %d 次后仍失败: %w", applyMaxAttempts, lastErr)
+	return result, nil
 }
 
-// applyOnce 执行一次余额变更事务。
+// apply 执行一次余额变更。
 //
 // 执行顺序是刻意安排的：
 //
@@ -75,24 +76,21 @@ func (r *Repository) Apply(ctx context.Context, req Request) (*Result, error) {
 //	  - 先写账本再改余额：账本的 entry_no 唯一索引是幂等闸门，
 //	    重复请求在这里就被拦下，不会走到改余额那一步。
 //	  - 余额不足的判定必须在这里做，因为只有这里持有行锁。
-func (r *Repository) applyOnce(
+//
+// 本方法不开事务也不提交——事务边界属于调用方（见 Apply）。
+func (r *Repository) apply(
 	ctx context.Context,
+	exec tx.Executor,
 	req Request,
 	availableDelta, frozenDelta money.Amount,
 ) (*Result, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	account, err := lockAccount(ctx, tx, req.UserID)
+	account, err := lockAccount(ctx, exec, req.UserID)
 	if err != nil {
 		return nil, err
 	}
 
 	entryNo := req.EntryNoValue()
-	existing, err := findEntryByNo(ctx, tx, entryNo)
+	existing, err := findEntryByNo(ctx, exec, entryNo)
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +98,12 @@ func (r *Repository) applyOnce(
 		if !sameRequest(existing, req, availableDelta, frozenDelta) {
 			return nil, fmt.Errorf("%w: entry_no=%s", ErrIdempotencyKeyReused, entryNo)
 		}
-		// 重放：不再产生任何余额变动。提交只是为了释放行锁。
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("提交事务失败: %w", err)
-		}
+		// 重放：不再产生任何余额变动，原样返回首次执行的结果。
+		//
+		// 这里刻意不提交——即使外层是独立调用，提交也由 tx.Manager 负责。
+		// 曾经这里有一句 tx.Commit()，注释是「提交只是为了释放行锁」：
+		// 独立调用时无害，被跨域事务包裹时却会替调用方提交，
+		// 外层后续失败再也回滚不了。见 TestDuplicateInsideTransactionDoesNotCommitEarly。
 		return &Result{Account: account, Entry: existing, Duplicated: true}, nil
 	}
 
@@ -137,15 +137,11 @@ func (r *Repository) applyOnce(
 		FrozenAfter:    nextFrozen,
 		Remark:         req.Remark,
 	}
-	if err := insertEntry(ctx, tx, entry); err != nil {
+	if err := insertEntry(ctx, exec, entry); err != nil {
 		return nil, err
 	}
-	if err := updateBalance(ctx, tx, account.ID, nextAvailable, nextFrozen); err != nil {
+	if err := updateBalance(ctx, exec, account.ID, nextAvailable, nextFrozen); err != nil {
 		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交事务失败: %w", err)
 	}
 
 	account.AvailableBalance = nextAvailable
@@ -154,46 +150,9 @@ func (r *Repository) applyOnce(
 	return &Result{Account: account, Entry: entry}, nil
 }
 
-const (
-	// applyMaxAttempts 是单次余额变更的最大尝试次数。
-	//
-	// 为什么需要重试：账户首次创建时，SELECT ... FOR UPDATE 找不到行，
-	// 会在唯一索引的间隙上加间隙锁；两个并发事务的间隙锁彼此不冲突，
-	// 但随后的 INSERT 需要插入意向锁，与对方的间隙锁互斥——于是互相等待，
-	// 形成死锁，InnoDB 会挑一个事务回滚。
-	//
-	// 这不是代码缺陷，而是间隙锁的固有行为，无法从代码上消除。
-	// 死锁在资金路径上不能当作偶发错误抛给调用方：用户第一次充值时
-	// 并发的两次请求里有一次随机失败，是不可接受的。
-	//
-	// 实测：12 个并发请求对同一个新账户首次入账，不做重试时 7 个失败于死锁。
-	// 这条路径由 TestConcurrentFirstOperationsOnNewAccount 覆盖。
-	applyMaxAttempts = 3
-	applyRetryDelay  = 20 * time.Millisecond
-)
-
-// MySQL 服务端错误码。
-const (
-	errCodeDeadlock    = 1213 // Deadlock found when trying to get lock
-	errCodeLockTimeout = 1205 // Lock wait timeout exceeded
-)
-
-// isRetryableApplyError 判断错误是否值得重试。
-//
-// 只重试死锁与锁等待超时：它们意味着「这次撞上了并发」，重来一次就会成功。
-// 余额不足、幂等键冲突等业务错误绝不重试——重试改变不了结果，
-// 还会把本该立刻返回的错误拖成超时。
-func isRetryableApplyError(err error) bool {
-	var mysqlErr *mysqldriver.MySQLError
-	if !errors.As(err, &mysqlErr) {
-		return false
-	}
-	return mysqlErr.Number == errCodeDeadlock || mysqlErr.Number == errCodeLockTimeout
-}
-
 // lockAccount 锁定账户并返回其当前状态，账户不存在时先创建再锁定。
-func lockAccount(ctx context.Context, tx *sql.Tx, userID int64) (*Account, error) {
-	account, err := selectAccountForUpdate(ctx, tx, userID)
+func lockAccount(ctx context.Context, exec tx.Executor, userID int64) (*Account, error) {
+	account, err := selectAccountForUpdate(ctx, exec, userID)
 	if err == nil {
 		return account, nil
 	}
@@ -206,18 +165,18 @@ func lockAccount(ctx context.Context, tx *sql.Tx, userID int64) (*Account, error
 	// 用 ON DUPLICATE KEY UPDATE 而不是 INSERT IGNORE：后者会把外键错误
 	// 一并降级成警告，用户不存在时会静默跳过，问题被推迟到更难排查的地方。
 	// 并发首次入账时只有一个事务真正插入，另一个走重复键分支后重新加锁读取。
-	if _, err := tx.ExecContext(ctx,
+	if _, err := exec.ExecContext(ctx,
 		`INSERT INTO wallet_accounts (user_id, available_balance, frozen_balance)
 		 VALUES (?, 0, 0)
 		 ON DUPLICATE KEY UPDATE id = id`, userID); err != nil {
 		return nil, fmt.Errorf("初始化钱包账户失败: %w", err)
 	}
-	return selectAccountForUpdate(ctx, tx, userID)
+	return selectAccountForUpdate(ctx, exec, userID)
 }
 
-func selectAccountForUpdate(ctx context.Context, tx *sql.Tx, userID int64) (*Account, error) {
+func selectAccountForUpdate(ctx context.Context, exec tx.Executor, userID int64) (*Account, error) {
 	var account Account
-	err := tx.QueryRowContext(ctx,
+	err := exec.QueryRowContext(ctx,
 		`SELECT `+accountColumns+` FROM wallet_accounts WHERE user_id = ? FOR UPDATE`, userID).
 		Scan(&account.ID, &account.UserID, &account.AvailableBalance, &account.FrozenBalance,
 			&account.Version, &account.CreatedAt, &account.UpdatedAt)
@@ -244,8 +203,8 @@ func sameRequest(e *Entry, req Request, availableDelta, frozenDelta money.Amount
 		e.FrozenDelta == frozenDelta
 }
 
-func findEntryByNo(ctx context.Context, tx *sql.Tx, entryNo string) (*Entry, error) {
-	rows, err := tx.QueryContext(ctx,
+func findEntryByNo(ctx context.Context, exec tx.Executor, entryNo string) (*Entry, error) {
+	rows, err := exec.QueryContext(ctx,
 		`SELECT `+ledgerColumns+` FROM wallet_ledger WHERE entry_no = ?`, entryNo)
 	if err != nil {
 		return nil, fmt.Errorf("查询账本流水失败: %w", err)
@@ -262,8 +221,8 @@ func findEntryByNo(ctx context.Context, tx *sql.Tx, entryNo string) (*Entry, err
 	return &entries[0], nil
 }
 
-func insertEntry(ctx context.Context, tx *sql.Tx, e *Entry) error {
-	result, err := tx.ExecContext(ctx,
+func insertEntry(ctx context.Context, exec tx.Executor, e *Entry) error {
+	result, err := exec.ExecContext(ctx,
 		`INSERT INTO wallet_ledger
 			(account_id, user_id, entry_no, op, biz_type, biz_no,
 			 available_delta, frozen_delta, available_after, frozen_after, remark)
@@ -282,8 +241,13 @@ func insertEntry(ctx context.Context, tx *sql.Tx, e *Entry) error {
 	return nil
 }
 
-func updateBalance(ctx context.Context, tx *sql.Tx, accountID int64, available, frozen money.Amount) error {
-	_, err := tx.ExecContext(ctx,
+func updateBalance(
+	ctx context.Context,
+	exec tx.Executor,
+	accountID int64,
+	available, frozen money.Amount,
+) error {
+	_, err := exec.ExecContext(ctx,
 		`UPDATE wallet_accounts
 		 SET available_balance = ?, frozen_balance = ?, version = version + 1
 		 WHERE id = ?`, available, frozen, accountID)
@@ -297,7 +261,7 @@ func updateBalance(ctx context.Context, tx *sql.Tx, accountID int64, available, 
 // 账户不存在时返回 (nil, nil)，由调用方决定如何呈现。
 func (r *Repository) GetAccount(ctx context.Context, userID int64) (*Account, error) {
 	var account Account
-	err := r.db.QueryRowContext(ctx,
+	err := tx.Of(ctx, r.db).QueryRowContext(ctx,
 		`SELECT `+accountColumns+` FROM wallet_accounts WHERE user_id = ?`, userID).
 		Scan(&account.ID, &account.UserID, &account.AvailableBalance, &account.FrozenBalance,
 			&account.Version, &account.CreatedAt, &account.UpdatedAt)
@@ -333,7 +297,7 @@ func (r *Repository) ListEntries(ctx context.Context, userID int64, filter Entry
 	query.WriteString(` ORDER BY id DESC LIMIT ?`)
 	args = append(args, limit+1)
 
-	rows, err := r.db.QueryContext(ctx, query.String(), args...)
+	rows, err := tx.Of(ctx, r.db).QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询账本流水失败: %w", err)
 	}

@@ -6,10 +6,11 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -71,4 +72,26 @@ func Version(ctx context.Context, db *sql.DB) (string, error) {
 		return "", fmt.Errorf("查询 MySQL 版本失败: %w", err)
 	}
 	return version, nil
+}
+
+// MySQL 服务端错误码。
+//
+// 集中在这里是因为「哪些错误值得重试」是 MySQL 的领域知识，
+// 仓储层与事务管理器都需要判断，不该各自抄一份常量。
+const (
+	ErrCodeDeadlock    = 1213 // Deadlock found when trying to get lock
+	ErrCodeLockTimeout = 1205 // Lock wait timeout exceeded
+)
+
+// IsRetryable 判断错误是否值得重试。
+//
+// 只认死锁与锁等待超时：它们意味着「这次撞上了并发」，重来一次就会成功。
+// 业务错误（余额不足、唯一键冲突）绝不重试——重试改变不了结果，
+// 还会把本该立刻返回的错误拖成超时。
+func IsRetryable(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == ErrCodeDeadlock || mysqlErr.Number == ErrCodeLockTimeout
 }
