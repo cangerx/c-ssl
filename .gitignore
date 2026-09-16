@@ -18,6 +18,7 @@ server/bin/
 
 # 本地缓存与工具
 .cache/
+.venv/
 .workbuddy-ai/
 .DS_Store
 *.log

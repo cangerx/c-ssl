@@ -1,0 +1,81 @@
+BadRequest:
+  description: 参数校验失败（code 1000）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 1000
+        message: 参数校验失败
+        data:
+          fields:
+            email: 邮箱格式不正确
+
+Unauthorized:
+  description: 未认证或令牌已失效（code 1001）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 1001
+        message: 登录状态已失效，请重新登录
+        data: null
+
+Forbidden:
+  description: 无权限执行该操作（code 1002）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 1002
+        message: 无权限执行该操作
+        data: null
+
+NotFound:
+  description: 资源不存在（code 1003）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 1003
+        message: 资源不存在
+        data: null
+
+TooManyRequests:
+  description: 请求过于频繁，已触发限流（code 1004）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 1004
+        message: 操作过于频繁，请稍后再试
+        data: null
+
+InternalError:
+  description: 服务内部错误（code 5000）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 5000
+        message: 服务暂时不可用
+        data: null
+
+ServiceUnavailable:
+  description: 服务不可用，依赖未就绪（code 5000）
+  content:
+    application/json:
+      schema:
+        $ref: './schemas/common.yaml#/ErrorResponse'
+      example:
+        code: 5000
+        message: 服务依赖未就绪
+        data:
+          mysql:
+            ok: false
+            error: connection refused

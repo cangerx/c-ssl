@@ -1,0 +1,79 @@
+ApiEnvelope:
+  type: object
+  description: 所有接口响应的公共外壳
+  required: [code, message]
+  properties:
+    code:
+      type: integer
+      format: int32
+      description: |
+        业务码，0 表示成功。非 0 的取值：
+
+        | 码 | 含义 |
+        |---|---|
+        | 1000 | 参数校验失败 |
+        | 1001 | 未认证或令牌失效 |
+        | 1002 | 无权限 |
+        | 1003 | 资源不存在 |
+        | 1004 | 请求过于频繁 |
+        | 2000 | 余额不足 |
+        | 2001 | 订单状态不允许该操作 |
+        | 3000 | 上游服务错误 |
+        | 5000 | 服务内部错误 |
+      example: 0
+    message:
+      type: string
+      description: 面向用户的提示信息，可直接展示
+      example: success
+
+ErrorResponse:
+  allOf:
+    - $ref: '#/ApiEnvelope'
+    - type: object
+      description: 错误响应。data 通常为空，字段级校验失败时会带上具体字段
+      properties:
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+          example:
+            fields:
+              email: 邮箱格式不正确
+
+DependencyStatus:
+  type: object
+  description: 单个外部依赖的连通性
+  required: [ok]
+  properties:
+    ok:
+      type: boolean
+    latencyMs:
+      type: integer
+      format: int32
+      description: 探测耗时，单位毫秒
+      example: 2
+    error:
+      type: string
+      nullable: true
+      description: 失败原因，成功时为 null
+
+HealthStatus:
+  type: object
+  required: [status, version, dependencies]
+  properties:
+    status:
+      type: string
+      enum: [ok, degraded]
+      description: ok 表示全部依赖正常；degraded 表示部分依赖异常
+    version:
+      type: string
+      description: 服务构建版本
+      example: 0.1.0
+    dependencies:
+      type: object
+      required: [mysql, redis]
+      properties:
+        mysql:
+          $ref: '#/DependencyStatus'
+        redis:
+          $ref: '#/DependencyStatus'

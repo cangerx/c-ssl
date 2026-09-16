@@ -1,0 +1,144 @@
+DcvMethod:
+  type: string
+  description: |
+    域名验证方式。取值的可用性由产品规则决定，前端不得自行假设：
+    含通配符的证书不支持文件验证；GlobalSign、AlphaSSL 不支持邮件验证。
+  enum:
+    - dns_txt
+    - dns_cname
+    - http_file
+    - https_file
+    - email
+
+KeyAlgorithm:
+  type: string
+  description: 证书密钥算法
+  enum:
+    - rsa
+    - ecc
+
+ProductPrice:
+  type: object
+  description: 某一年限的零售价格
+  required: [years, retailPrice]
+  properties:
+    years:
+      type: integer
+      description: 证书年限
+      example: 1
+    retailPrice:
+      type: integer
+      format: int64
+      description: 零售价，单位分
+      example: 29800
+    originalPrice:
+      type: integer
+      format: int64
+      nullable: true
+      description: 划线价，单位分。无划线价时为 null
+
+Product:
+  type: object
+  description: |
+    产品及其可用规则。前端表单的选项集合必须取自这些字段，
+    规则判断只发生在后端 `internal/product/rules/`。
+  required:
+    - id
+    - name
+    - brand
+    - validationType
+    - years
+    - keyAlgorithms
+    - dcvMethods
+    - prices
+  properties:
+    id:
+      type: integer
+      format: int64
+      example: 1
+    name:
+      type: string
+      example: DigiCert Secure Site OV
+    brand:
+      type: string
+      description: 证书品牌，与上游供应商无关
+      example: DigiCert
+    validationType:
+      type: string
+      enum: [dv, ov, ev]
+      description: DV 域名验证、OV 组织验证、EV 扩展验证
+    wildcardSupported:
+      type: boolean
+      description: 是否支持通配符域名
+    ipSupported:
+      type: boolean
+      description: 是否支持 IP 地址。EV 恒为 false
+    multiDomainSupported:
+      type: boolean
+      description: 是否支持多域名（SAN）
+    minSans:
+      type: integer
+      nullable: true
+      description: 包含的域名数下限，不适用时为 null
+    maxSans:
+      type: integer
+      nullable: true
+      description: 可添加的域名数上限，不适用时为 null
+    years:
+      type: array
+      description: 支持购买的年限，如 [1, 2]
+      items:
+        type: integer
+    keyAlgorithms:
+      type: array
+      description: 支持的密钥算法
+      items:
+        $ref: '#/KeyAlgorithm'
+    dcvMethods:
+      type: array
+      description: 当前产品支持的域名验证方式
+      items:
+        $ref: '#/DcvMethod'
+    reissueSupported:
+      type: boolean
+      description: 是否支持重签。免费证书恒为 false
+    cancelSupported:
+      type: boolean
+      description: 是否支持取消。免费证书恒为 false
+    requireOrganizationInfo:
+      type: boolean
+      description: 下单时是否必须提交完整企业信息。OV、EV 恒为 true
+    recommendTag:
+      type: string
+      nullable: true
+      description: 推荐标签文案，无标签时为 null
+      example: 热销
+    prices:
+      type: array
+      description: 各年限的零售价，单位分
+      items:
+        $ref: '#/ProductPrice'
+
+ProductListResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/Product'
+
+ProductDetailResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/Product'

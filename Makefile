@@ -6,8 +6,14 @@ MIGRATE    := $(shell command -v migrate 2>/dev/null || echo $(GOBIN)/migrate)
 MIGRATIONS := server/migrations
 
 MYSQL_DSN   := $(shell [ -f .env ] && grep -E '^MYSQL_DSN=' .env | head -1 | cut -d= -f2-)
-MIGRATE_URL := mysql://$(firstword $(subst ?, ,$(MYSQL_DSN)))
+# 迁移连接串单独构造：golang-migrate 会把整个 .sql 文件当一条语句执行，
+# 必须带 multiStatements=true。应用自身的 DSN 不加这个参数，避免放大注入风险。
+MYSQL_DSN_BASE := $(firstword $(subst ?, ,$(MYSQL_DSN)))
+MIGRATE_URL    := $(if $(MYSQL_DSN_BASE),mysql://$(MYSQL_DSN_BASE)?multiStatements=true,)
 REDIS_DB    := $(shell [ -f .env ] && grep -E '^REDIS_DB=' .env | head -1 | cut -d= -f2-)
+
+# 契约校验脚本需要 PyYAML，优先用项目虚拟环境
+PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 
 # ── 帮助 ──────────────────────────────────────────
 
@@ -42,11 +48,20 @@ redis-flush: ## 清空本项目独占的 Redis 库（危险，需 CONFIRM=yes）
 	  echo "确认请执行：make redis-flush CONFIRM=yes"; exit 1; fi
 	@redis-cli -n $(REDIS_DB) FLUSHDB && echo "已清空 Redis db$(REDIS_DB)"
 
+.PHONY: tooling-setup
+tooling-setup: ## 创建 Python 工具虚拟环境（契约校验依赖）
+	@python3 -m venv .venv && .venv/bin/pip -q install -r scripts/requirements.txt
+	@echo "工具环境就绪：.venv/"
+
+.PHONY: spec-check
+spec-check: ## 校验 OpenAPI 契约（$ref 完整性 + operationId 唯一性）
+	@$(PYTHON) scripts/check-openapi.py
+
 # ── 数据库迁移 ────────────────────────────────────
 
 .PHONY: check-migrations
 check-migrations:
-	@if [ "$(MIGRATE_URL)" = "mysql://" ]; then \
+	@if [ -z "$(MIGRATE_URL)" ]; then \
 	  echo "错误：.env 中 MYSQL_DSN 未配置。请先执行 make db-create。"; exit 1; fi
 	@if [ ! -d "$(MIGRATIONS)" ]; then \
 	  echo "错误：目录 $(MIGRATIONS) 不存在。Phase 0 尚未生成迁移文件。"; exit 1; fi

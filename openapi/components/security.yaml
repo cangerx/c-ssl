@@ -1,0 +1,9 @@
+bearerAuth:
+  type: http
+  scheme: bearer
+  bearerFormat: JWT
+  description: |
+    Access Token，放在 `Authorization: Bearer <token>`。
+
+    由 `/auth/login` 或 `/auth/refresh` 返回，有效期较短（默认 15 分钟）。
+    过期后用 Refresh Token 调用 `/auth/refresh` 换取新令牌。

@@ -1,0 +1,16 @@
+me:
+  get:
+    tags: [me]
+    summary: 获取当前用户
+    description: |
+      返回当前登录用户的基本资料。用于前端启动时校验令牌有效性与拉取用户信息。
+    operationId: getMe
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/user.yaml#/MeResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'

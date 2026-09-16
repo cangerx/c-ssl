@@ -1,0 +1,60 @@
+list:
+  get:
+    tags: [products]
+    summary: 产品列表
+    description: |
+      返回已上架产品及其可用规则。
+
+      **前端表单选项必须来自本接口返回的字段，不得在本地推导规则。**
+      例如产品不支持通配符时 `wildcardSupported` 为 `false`，前端据此禁用对应选项，
+      而不是自行判断品牌与证书类型。规则的唯一真源在后端 `internal/product/rules/`，
+      规则变更不应要求前端发版。
+
+      本接口不需要认证，便于用户站在未登录状态下展示产品页。
+    operationId: listProducts
+    security: []
+    parameters:
+      - name: validationType
+        in: query
+        required: false
+        description: 按证书验证等级筛选
+        schema:
+          type: string
+          enum: [dv, ov, ev]
+      - name: brand
+        in: query
+        required: false
+        description: 按品牌筛选，如 DigiCert、GlobalSign、Certum
+        schema:
+          type: string
+          maxLength: 32
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/product.yaml#/ProductListResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+
+detail:
+  get:
+    tags: [products]
+    summary: 产品详情
+    description: |
+      返回单个产品的完整规则与多年价格，供下单页渲染表单与试算。
+      产品已下架或不存在时返回 404。
+    operationId: getProduct
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ProductId'
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/product.yaml#/ProductDetailResponse'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'

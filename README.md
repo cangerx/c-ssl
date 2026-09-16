@@ -37,6 +37,10 @@ c-ssl/
 ```bash
 cp .env.example .env     # 首次使用，按需填写
 make env-check           # 环境自检：工具链 + 数据库连通性
+make tooling-setup       # 创建 Python 工具环境（契约校验用）
+make db-create           # 建库建用户
+make migrate-up          # 执行数据库迁移
+make run-api             # 启动 API，访问 /health 验证
 make help                # 查看全部命令
 ```
 
@@ -44,4 +48,6 @@ make help                # 查看全部命令
 
 ## 当前状态
 
-Phase 0 进行中。环境准备与根配置文件已完成，`openapi/` 契约、`server/` Go 模块与前端应用尚未初始化。
+Phase 0 进行中。已完成：环境准备、根配置文件、OpenAPI 契约骨架、Go 服务模块（三入口 + 健康检查）、首个数据库迁移。待做：契约类型生成、前端应用初始化、端到端冒烟。
+
+接口契约在 `openapi/openapi.yaml`，是前后端字段的唯一真源。

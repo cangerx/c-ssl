@@ -1,0 +1,94 @@
+User:
+  type: object
+  description: 平台会员
+  required: [id, email, status, createdAt]
+  properties:
+    id:
+      type: integer
+      format: int64
+      example: 10001
+    email:
+      type: string
+      format: email
+      description: 登录邮箱，全局唯一
+    nickname:
+      type: string
+      description: 昵称，未设置时为空字符串
+      example: ""
+    status:
+      type: string
+      enum: [active, disabled]
+      description: disabled 状态下不允许登录与下单
+    createdAt:
+      type: string
+      format: date-time
+
+RegisterRequest:
+  type: object
+  required: [email, password]
+  properties:
+    email:
+      type: string
+      format: email
+      maxLength: 254
+    password:
+      type: string
+      minLength: 8
+      maxLength: 72
+      description: 服务端以 Argon2id 哈希后存储，不保存明文
+      format: password
+    nickname:
+      type: string
+      maxLength: 32
+
+LoginRequest:
+  type: object
+  required: [email, password]
+  properties:
+    email:
+      type: string
+      format: email
+    password:
+      type: string
+      format: password
+
+RefreshRequest:
+  type: object
+  required: [refreshToken]
+  properties:
+    refreshToken:
+      type: string
+
+AuthTokens:
+  type: object
+  required: [accessToken, refreshToken, expiresIn]
+  properties:
+    accessToken:
+      type: string
+      description: "放在 Authorization 请求头，格式为 Bearer <token>"
+    refreshToken:
+      type: string
+      description: 仅用于调用 /auth/refresh，客户端应安全存储
+    expiresIn:
+      type: integer
+      format: int32
+      description: Access Token 有效期，单位秒
+      example: 900
+
+AuthTokensResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/AuthTokens'
+
+MeResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/User'

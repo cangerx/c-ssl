@@ -1,0 +1,10 @@
+ProductId:
+  name: id
+  in: path
+  required: true
+  description: 产品 ID
+  schema:
+    type: integer
+    format: int64
+    minimum: 1
+  example: 1

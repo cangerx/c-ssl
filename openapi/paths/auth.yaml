@@ -1,0 +1,80 @@
+register:
+  post:
+    tags: [auth]
+    summary: 邮箱注册
+    description: |
+      创建用户账号。口令由服务端使用 Argon2id 哈希后存储，不保存明文。
+      注册成功直接返回令牌，无需再次登录。
+    operationId: register
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/user.yaml#/RegisterRequest'
+    responses:
+      '200':
+        description: 注册成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/user.yaml#/AuthTokensResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '429':
+        $ref: '../components/responses.yaml#/TooManyRequests'
+
+login:
+  post:
+    tags: [auth]
+    summary: 邮箱登录
+    description: |
+      使用邮箱与口令换取令牌。连续失败会触发限流与账号锁定，
+      失败次数与设备信息会被记录。
+    operationId: login
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/user.yaml#/LoginRequest'
+    responses:
+      '200':
+        description: 登录成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/user.yaml#/AuthTokensResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '429':
+        $ref: '../components/responses.yaml#/TooManyRequests'
+
+refresh:
+  post:
+    tags: [auth]
+    summary: 刷新令牌
+    description: |
+      用 Refresh Token 换取新的 Access Token。
+      Refresh Token 过期或已撤销时返回 401，客户端应引导用户重新登录。
+    operationId: refreshToken
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/user.yaml#/RefreshRequest'
+    responses:
+      '200':
+        description: 刷新成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/user.yaml#/AuthTokensResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
