@@ -54,12 +54,13 @@ make help                # 查看全部命令
 启动前端（另开终端）：
 
 ```bash
-pnpm --filter admin dev              # 运营后台 → http://localhost:8000/products
-pnpm --filter web exec next dev      # 用户站   → http://localhost:3000
+make admin                # 运营后台 → http://localhost:8000/products
+make web                  # 用户站   → http://localhost:3000
+make web PORT=3001        # 3000 被占用时换端口
 ```
 
-> 本机 3000 端口可能被其它项目占用，用户站可用 `-p 3001` 换端口。两个前端都已配置
-> `/api` 反向代理到 `127.0.0.1:8080`，开发期不需要处理跨域。
+> 两个前端都已配置 `/api` 反向代理到 `127.0.0.1:8080`，开发期不需要处理跨域。
+> 本机 3000 端口常被其它项目占用，用 `PORT=` 覆盖即可，不要动别人的进程。
 
 ## 当前状态
 
