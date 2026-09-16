@@ -125,5 +125,31 @@ else
   ok "FOXSSL_API_KEY 未配置（本地走 mock，符合预期）"
 fi
 
+hdr "支付渠道"
+
+# PAYMENT_PROVIDER 缺省是 mock，所以空值不算错，只提示。
+PPROVIDER="$(envval PAYMENT_PROVIDER)"
+case "$PPROVIDER" in
+  ""|mock) ok "PAYMENT_PROVIDER=${PPROVIDER:-mock}（本地模拟渠道，不会真的收钱）" ;;
+  *)       ok "PAYMENT_PROVIDER=$PPROVIDER" ;;
+esac
+
+# PAYMENT_WEBHOOK_SECRET 是必填项：缺失时服务端会直接拒绝启动，
+# 所以这里必须判成 bad 而不是 warn，否则自检全绿但服务起不来。
+PSECRET="$(envval PAYMENT_WEBHOOK_SECRET)"
+if [ -z "$PSECRET" ]; then
+  bad "PAYMENT_WEBHOOK_SECRET 未配置（服务端启动会失败）"
+elif [ "${#PSECRET}" -lt 32 ]; then
+  warn "PAYMENT_WEBHOOK_SECRET 仅 ${#PSECRET} 位，非开发环境要求 ≥ 32 位"
+else
+  ok "PAYMENT_WEBHOOK_SECRET 已配置（${#PSECRET} 位）"
+fi
+
+# 模拟渠道不会真的收钱：它生成的支付地址是本地页面，回调也由本服务自己发出。
+# 配上生产环境等于给所有人免费充值，服务端会拒绝启动，这里提前提醒。
+if [ "$(envval APP_ENV)" = "production" ] && [ "${PPROVIDER:-mock}" = "mock" ]; then
+  bad "APP_ENV=production 却启用了 mock 支付渠道（服务端会拒绝启动）"
+fi
+
 printf '\n\033[1m结果：\033[0m %d 通过, %d 警告, %d 失败\n' "$PASS" "$WARN" "$FAIL"
 [ "$FAIL" -gt 0 ] && exit 1 || exit 0
