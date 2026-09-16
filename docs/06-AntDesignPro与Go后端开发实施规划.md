@@ -300,7 +300,7 @@ GET  /api/v1/products/:id
 
 POST /api/v1/recharge/orders
 GET  /api/v1/recharge/orders
-POST /api/v1/payments/webhook
+POST /api/v1/payments/webhook/{channel}
 
 GET  /api/v1/orders
 POST /api/v1/orders
@@ -323,6 +323,14 @@ GET  /api/v1/admin/finance/ledger
 ```
 
 OpenAPI 作为唯一接口契约：Go 服务校验接口实现，Ant Design Pro 和用户站生成 TypeScript 类型，避免前后端字段漂移。
+
+关于支付回调路径的一点细化（Phase 1 实现时确定）：回调地址带上了渠道标识
+`POST /api/v1/payments/webhook/{channel}`，而不是单一的无参路径。
+原因有两个：渠道回调报文里没有「我是哪个渠道」这种字段（解析报文之前
+就需要知道用哪个密钥验签），以及真实渠道各自要求在商户后台配置回调地址——
+每个渠道一条独立 URL 才配得清楚。开发环境另有一个只在
+`APP_ENV=development` 时注册的 `POST /api/v1/payments/mock/notify`，
+用于手工模拟渠道投递回调。
 
 ## 8. Ant Design Pro 后台页面
 
