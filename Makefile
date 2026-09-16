@@ -130,14 +130,33 @@ run-cron: check-server ## 本地启动 Cron
 
 # ── 前端 ──────────────────────────────────────────
 
+# 前端命令统一走 `env -u NODE_OPTIONS`：沙箱通过 NODE_OPTIONS 注入的 fs shim
+# 只支持递归 mkdir，会让部分包管理操作失败。
+# 两个框架都读 PORT 环境变量，本机默认端口被占用时用 PORT=xxx 覆盖。
+PORT_ENV := $(if $(PORT),PORT=$(PORT),)
+
 .PHONY: install
 install: ## 安装前端 workspace 依赖
-	@pnpm install
+	@env -u NODE_OPTIONS pnpm install
+
+.PHONY: gen
+gen: ## 由 OpenAPI 契约生成 TypeScript 类型
+	@bash scripts/gen-api-types.sh
+
+.PHONY: gen-check
+gen-check: ## 校验生成物与契约一致（CI 用）
+	@bash scripts/check-generated.sh
 
 .PHONY: web
-web: ## 启动用户站（Next.js）
-	@pnpm --filter web dev
+web: ## 启动用户站（Next.js，默认 3000，PORT=3001 换端口）
+	@env -u NODE_OPTIONS $(PORT_ENV) pnpm --filter web exec next dev
 
 .PHONY: admin
-admin: ## 启动运营后台（Ant Design Pro）
-	@pnpm --filter admin dev
+admin: ## 启动运营后台（Ant Design Pro，默认 8000，PORT=8001 换端口）
+	@env -u NODE_OPTIONS $(PORT_ENV) pnpm --filter admin exec umi dev
+
+.PHONY: typecheck
+typecheck: ## 前端类型检查（admin + web）
+	@env -u NODE_OPTIONS pnpm --filter admin run lint
+	@env -u NODE_OPTIONS pnpm --filter web run lint
+	@echo "前端类型检查通过"

@@ -10,7 +10,12 @@ dist/
 build/
 .next/
 .umi/
+.umi-production/
 .turbo/
+*.tsbuildinfo
+
+# Next.js 自动生成，随版本变化，不入库
+next-env.d.ts
 
 # Go
 server/bin/
