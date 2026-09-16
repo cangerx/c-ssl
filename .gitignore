@@ -1,0 +1,28 @@
+# 环境变量（.env.example 需提交）
+.env
+.env.*
+!.env.example
+
+# Node / 前端依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+build/
+.next/
+.umi/
+.turbo/
+
+# Go
+server/bin/
+*.test
+
+# 本地缓存与工具
+.cache/
+.workbuddy-ai/
+.DS_Store
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
