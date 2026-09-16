@@ -78,18 +78,18 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 // 上游密钥、支付私钥、口令一旦进入日志就等于泄露，这里集中登记，
 // 由调用方在记录请求/响应体前先过一遍。
 var Sensitive = map[string]struct{}{
-	"password":          {},
-	"passwd":            {},
-	"api_key":           {},
-	"apikey":            {},
-	"apiKey":            {},
-	"secret":            {},
-	"private_key":       {},
-	"privateKey":        {},
-	"token":             {},
-	"access_token":      {},
-	"refresh_token":     {},
-	"authorization":     {},
+	"password":            {},
+	"passwd":              {},
+	"api_key":             {},
+	"apikey":              {},
+	"apiKey":              {},
+	"secret":              {},
+	"private_key":         {},
+	"privateKey":          {},
+	"token":               {},
+	"access_token":        {},
+	"refresh_token":       {},
+	"authorization":       {},
 	"X-Webhook-Signature": {},
 }
 

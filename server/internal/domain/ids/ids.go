@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	prefixOrder  = "CS" // 证书订单
-	prefixLedger = "WL" // 钱包流水
+	prefixOrder    = "CS" // 证书订单
+	prefixLedger   = "WL" // 钱包流水
 	prefixRecharge = "RC" // 充值订单
 )
 

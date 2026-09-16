@@ -71,6 +71,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: gofmt 格式校验
+        # 本 job 默认工作目录是 server/，而 Makefile 在仓库根目录
+        working-directory: .
+        run: make fmt-check
+
       - name: 单元测试
         run: go test ./... -race -count=1
 

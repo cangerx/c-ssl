@@ -100,8 +100,24 @@ check-server:
 tidy: check-server ## 整理 Go 依赖
 	@cd server && go mod tidy
 
+.PHONY: fmt
+fmt: check-server ## 格式化 Go 源码
+	@cd server && gofmt -w ./cmd ./internal
+	@echo "已格式化 server/cmd 与 server/internal"
+
+.PHONY: fmt-check
+fmt-check: check-server ## 校验 Go 源码格式（CI 用）
+	@cd server && unformatted="$$(gofmt -l ./cmd ./internal)"; \
+	  if [ -n "$$unformatted" ]; then \
+	    echo "以下文件未按 gofmt 格式化："; \
+	    echo "$$unformatted"; \
+	    echo "请执行 make fmt 修正。"; \
+	    exit 1; \
+	  fi
+	@echo "Go 源码格式合规"
+
 .PHONY: lint
-lint: check-server ## 静态检查
+lint: check-server fmt-check ## 静态检查（含 gofmt 格式校验）
 	@cd server && golangci-lint run ./...
 
 .PHONY: test
@@ -127,6 +143,10 @@ run-worker: check-server ## 本地启动 Worker
 .PHONY: run-cron
 run-cron: check-server ## 本地启动 Cron
 	@cd server && go run ./cmd/cron
+
+.PHONY: smoke-auth
+smoke-auth: ## 认证域端到端冒烟（需先 make run-api）
+	@$(PYTHON) scripts/smoke-auth.py $(if $(BASE),--base $(BASE),)
 
 # ── 前端 ──────────────────────────────────────────
 
