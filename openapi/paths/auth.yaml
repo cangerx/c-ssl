@@ -61,6 +61,9 @@ refresh:
     description: |
       用 Refresh Token 换取新的 Access Token。
       Refresh Token 过期或已撤销时返回 401，客户端应引导用户重新登录。
+
+      刷新会**轮换** Refresh Token：旧令牌立即失效，响应中返回新的令牌对。
+      客户端必须用新令牌覆盖旧值，继续使用旧令牌会被判定为令牌重放。
     operationId: refreshToken
     security: []
     requestBody:
@@ -76,5 +79,26 @@ refresh:
           application/json:
             schema:
               $ref: '../components/schemas/user.yaml#/AuthTokensResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+
+logout:
+  post:
+    tags: [auth]
+    summary: 退出登录
+    description: |
+      撤销当前会话的刷新令牌，客户端应立即清除本地保存的令牌。
+
+      Access Token 是无状态的，服务端无法提前作废，它会在剩余有效期内
+      （最长 15 分钟）自然过期。需要立即失效的场景应改用改密或管理员封禁，
+      那两条路径会撤销该用户的全部会话。
+    operationId: logout
+    responses:
+      '200':
+        description: 退出成功，data 为 null
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ApiEnvelope'
       '401':
         $ref: '../components/responses.yaml#/Unauthorized'

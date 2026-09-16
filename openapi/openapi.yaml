@@ -54,6 +54,9 @@ paths:
   /auth/refresh:
     $ref: './paths/auth.yaml#/refresh'
 
+  /auth/logout:
+    $ref: './paths/auth.yaml#/logout'
+
   /me:
     $ref: './paths/me.yaml#/me'
 

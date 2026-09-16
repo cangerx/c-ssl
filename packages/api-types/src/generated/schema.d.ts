@@ -80,8 +80,35 @@ export interface paths {
          * 刷新令牌
          * @description 用 Refresh Token 换取新的 Access Token。
          *     Refresh Token 过期或已撤销时返回 401，客户端应引导用户重新登录。
+         *
+         *     刷新会**轮换** Refresh Token：旧令牌立即失效，响应中返回新的令牌对。
+         *     客户端必须用新令牌覆盖旧值，继续使用旧令牌会被判定为令牌重放。
          */
         post: operations["refreshToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 退出登录
+         * @description 撤销当前会话的刷新令牌，客户端应立即清除本地保存的令牌。
+         *
+         *     Access Token 是无状态的，服务端无法提前作废，它会在剩余有效期内
+         *     （最长 15 分钟）自然过期。需要立即失效的场景应改用改密或管理员封禁，
+         *     那两条路径会撤销该用户的全部会话。
+         */
+        post: operations["logout"];
         delete?: never;
         options?: never;
         head?: never;
@@ -611,6 +638,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthTokensResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 退出成功，data 为 null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope"];
                 };
             };
             401: components["responses"]["Unauthorized"];
