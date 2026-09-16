@@ -1,3 +1,13 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm 10 默认拦截依赖的构建脚本。以下依赖必须允许执行，
+# 否则二进制不会被下载/编译，构建会失败。
+onlyBuiltDependencies:
+  - esbuild
+  - "@swc/core"
+  - core-js
+  - sharp
+  - "@parcel/watcher"
+  - unrs-resolver

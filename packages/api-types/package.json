@@ -1,0 +1,22 @@
+{
+  "name": "@c-ssl/api-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "由 openapi/openapi.yaml 生成的 TypeScript 类型。仅类型，无运行时代码。",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

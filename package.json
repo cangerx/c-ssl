@@ -9,8 +9,16 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "env:check": "bash scripts/env-check.sh",
+    "env:check": "make env-check",
+    "spec:check": "make spec-check",
+    "gen": "make gen",
+    "gen:check": "make gen-check",
+    "typecheck": "make typecheck",
     "lint": "pnpm -r --if-present run lint",
     "build": "pnpm -r --if-present run build"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.10.1",
+    "typescript": "^5.9.3"
   }
 }

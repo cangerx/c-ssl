@@ -14,6 +14,7 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/domain/errs"
 	"github.com/cangerx/c-ssl/server/internal/platform/mysql"
 	platformredis "github.com/cangerx/c-ssl/server/internal/platform/redis"
+	"github.com/cangerx/c-ssl/server/internal/product"
 	"github.com/cangerx/c-ssl/server/internal/server/httpx"
 	"github.com/cangerx/c-ssl/server/internal/server/middleware"
 )
@@ -55,7 +56,8 @@ func NewRouter(deps Deps) http.Handler {
 	r.Get("/health", deps.handleHealth)
 
 	r.Route(APIPrefix, func(r chi.Router) {
-		// Phase 0 仅打通链路，业务接口按 docs/仓库与目录结构设计.md 的分域逐个接入
+		// 垂直切片逐个接入。每个域自带 Routes，路由表在此集中装配。
+		product.NewHandler(product.NewService(product.NewRepository(deps.DB))).Routes(r)
 	})
 
 	return r
