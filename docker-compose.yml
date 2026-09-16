@@ -1,0 +1,62 @@
+# c-ssl 容器化依赖
+#
+# 用途：CI 流水线与需要与生产版本严格对齐的场景。
+# 本地开发**不需要** Docker —— 直接使用本机 MySQL 与 Redis 即可，
+# 详见 docs/本地开发环境.md。
+#
+# 端口刻意避开本机默认端口（3306 / 6379），防止与本地实例冲突：
+#   MySQL → 127.0.0.1:3307
+#   Redis → 127.0.0.1:6380
+#
+# 启动：docker compose up -d
+# 清理：docker compose down -v
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: c-ssl-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-c_ssl_dev}
+      MYSQL_USER: ${MYSQL_USER:-c_ssl}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-c_ssl_dev_password}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: c-ssl-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql_data:
+  redis_data:

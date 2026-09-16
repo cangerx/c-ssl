@@ -1,0 +1,16 @@
+{
+  "name": "c-ssl",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SSL 证书签发与销售平台",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22 <23",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "env:check": "bash scripts/env-check.sh",
+    "lint": "pnpm -r --if-present run lint",
+    "build": "pnpm -r --if-present run build"
+  }
+}
