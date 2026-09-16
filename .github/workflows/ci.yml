@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # pnpm 的全局缓存位置，配合 actions/setup-node 的 pnpm 缓存
+  NODE_VERSION: "22"
+  GO_VERSION: "1.26"
+
+jobs:
+  contract:
+    name: 契约校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 创建工具环境
+        run: make tooling-setup
+
+      - name: 校验 OpenAPI 契约
+        run: make spec-check
+
+      - name: 校验生成物未漂移
+        run: make gen-check
+
+      - name: 前端类型检查
+        run: make typecheck
+
+  server:
+    name: 服务端
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      - name: 编译
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: 单元测试
+        run: go test ./... -race -count=1
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: server
