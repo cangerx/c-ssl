@@ -189,6 +189,31 @@ payment_transactions  支付渠道原始流水
 6. 不同品牌支持的年限和 CSR 算法不同。
 7. 免费证书不能重签和取消。
 
+**这 7 条全部在后端校验，不依赖前端。** 下单时校验 1、2、5、6、7
+（`product/rules` 的 `Normalize` / `Validate` 与 `order.Service.Create`）；
+提交域名验证时校验 2、3、4（`order.Service.declaredDcvMethods`）。
+
+域名验证这一处值得单独说明，因为它同时受两个来源约束，而两个来源含义不同：
+
+- **产品声明的能力**（`rules.AllowedDcvMethods`）——「我们卖的是什么」。
+  规则 2、3、4 在这里落地：AlphaSSL 的订单提交邮件验证会被拒。
+  判据取订单的**全部**域名，而不是本次提交的那些：规则 2 约束的是整张证书，
+  只看本次提交的域名会让「只提交非通配符那个域名」绕过它。
+- **上游实际准备好的验证材料**——「现在实际能做到什么」。上游没返回邮件地址，
+  就说明它没为这个订单准备邮件验证，提交了只会换回一个上游报错。
+  判据取**本次提交的**域名：验证方式逐域名生效，同一张证书上 A 走 DNS、
+  B 走文件是正常用法，按整张证书取交集会把这种用法一并拒掉。
+
+下发前端的 `availableMethods` 是两者的交集，且与「提交什么会被接受」严格一致——
+界面上列出了、用户选了却被 400 拒掉，是这个域最让人费解的故障，
+所以这个字段只能由 Service 统一算好（`order.Service.withAllowedMethods`），
+handler 不得另行推导。
+
+产品下架后不再施加产品侧约束，退回到只按上游材料判断：用户已经付过钱、
+上游也已备好材料，卡住验证只会让一张已付款的订单烂在那里。这与取消/重签的
+保守方向相反——那两件事判断错了会多花钱，这里判断错了只是让一个合法的
+验证提交不了。
+
 ### 4.4 订单和证书
 
 平台同时保留三类编号：
@@ -330,6 +355,8 @@ POST /api/v1/orders/:orderNo/domains/resend-email
 POST /api/v1/orders/:orderNo/domains/regenerate-token
 GET  /api/v1/orders/:orderNo/certificate
 
+POST /api/v1/orders/:orderNo/mock/issue
+
 POST /api/v1/webhooks/foxssl
 
 GET  /api/v1/admin/dashboard
@@ -347,6 +374,14 @@ OpenAPI 作为唯一接口契约：Go 服务校验接口实现，Ant Design Pro 
 每个渠道一条独立 URL 才配得清楚。开发环境另有一个只在
 `APP_ENV=development` 时注册的 `POST /api/v1/payments/mock/notify`，
 用于手工模拟渠道投递回调。
+
+订单域有一个同类的开发辅助接口：只在 `FOXSSL_PROVIDER=mock` 时注册的
+`POST /api/v1/orders/:orderNo/mock/issue`。它把**上游侧**的订单推进到已签发，
+**不改动本地订单**——本地状态仍由上游回调驱动。这是刻意的：如果它顺手把本地
+订单也改成 `issued`，端到端冒烟就会绕开回调路径，而回调（验签、幂等、乱序、
+资金释放）恰恰是最需要被完整验证的一段。真实 CA 不会因为一个 HTTP 请求就
+立刻签发证书，所以这个能力只可能属于模拟上游；它因此不是 `foxssl.Client`
+的方法，而是模拟客户端自己的方法。
 
 ## 8. Ant Design Pro 后台页面
 
@@ -502,6 +537,20 @@ audit_logs
 8. 订单状态可由 Webhook 更新，也可由轮询补偿。
 9. 管理员操作有权限校验和审计记录。
 10. FoxSSL API Key 不出现在前端和普通日志中。
+
+已经落地的部分与覆盖方式：
+
+| 条 | 覆盖方式 |
+|----|----------|
+| 1 | `make smoke-auth` |
+| 2 | `make smoke-recharge` + `recharge` 包的幂等测试 |
+| 3 | `make smoke-order` 第 13 节 + `TestInsufficientBalanceLeavesNoOrder` |
+| 4 | `TestDeterministicUpstreamRejectionUnfreezes`。需要注入上游失败，HTTP 冒烟造不出来 |
+| 5 | `TestRetrySubmitConvergesToSingleUpstreamOrder` |
+| 6 | `make smoke-order` 第 3、4、15 节 + `order` / `product/rules` 的规则测试 |
+| 7 | `make smoke-order` 第 7 节 + `TestWebhookRejectsTamperedSignatureWithoutWriting` |
+| 8 | 回调一侧已覆盖（`make smoke-order` 第 6 节）；轮询补偿待 Phase 3 |
+| 9、10 | 待 Phase 4 管理后台落地 |
 
 ## 12. 当前建议
 
