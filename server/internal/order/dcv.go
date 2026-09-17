@@ -147,6 +147,48 @@ func IntersectMethods(domains []Domain) []rules.DcvMethod {
 	return out
 }
 
+// mapUpstreamDcvMethod 把上游的验证方式翻译成平台取值。
+//
+// **上游的请求侧与响应侧不是同一套取值。** 请求要小写
+// （file / dns / email / dns_txt / dns_cname），而响应返回的是大写常量名：
+//
+//	HTTP_CSR_HASH  → http_file
+//	CNAME_CSR_HASH → dns_cname
+//	DNS_CNAME      → dns_cname
+//	DNS_TXT        → dns_txt
+//	EMAIL          → email
+//
+// 直接把响应里的取值当平台取值用（rules.DcvMethod(src.Method)），会让
+// 订单里存着一个平台不认识的字符串——它会被写进数据库、出现在接口响应里，
+// 而前端的验证方式匹配不到任何一项，用户看到的是一个空白的方式。
+//
+// CNAME_CSR_HASH 映射到 dns_cname 而不是平台的「dns」：平台根本没有 dns
+// 这个取值（见 foxssl.toWireDcvMethod 的说明），而两者都是「在域名下加一条
+// CNAME 记录」，语义一致。
+//
+// 也接受平台自己的取值——Mock 上游返回的就是它们。这样 Mock 与真实上游
+// 走同一条路径，调用处不需要按 provider 分支。
+//
+// 未识别的取值返回空串，而不是原样存下来：调用方据此知道「上游给了个
+// 我们不认识的方式」，可以按「没有方式」处理。
+func mapUpstreamDcvMethod(method string) rules.DcvMethod {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "HTTP_CSR_HASH":
+		return rules.HTTPFile
+	case "CNAME_CSR_HASH", "DNS_CNAME":
+		return rules.DnsCname
+	case "DNS_TXT":
+		return rules.DnsTxt
+	case "EMAIL":
+		return rules.Email
+	}
+
+	if platform := rules.DcvMethod(strings.ToLower(strings.TrimSpace(method))); platform.Valid() {
+		return platform
+	}
+	return ""
+}
+
 // NewDomain 由上游返回的域名材料构造本域的 Domain。
 //
 // 路径模板在这里展开——这是唯一一处把上游模板转成用户可见路径的地方。
@@ -157,7 +199,7 @@ func NewDomain(orderNo string, src foxssl.Domain, primary bool) Domain {
 		Wildcard: IsWildcard(src.Domain),
 		Primary:  primary,
 		Status:   mapUpstreamDomainStatus(src.Status),
-		Method:   rules.DcvMethod(src.Method),
+		Method:   mapUpstreamDcvMethod(src.Method),
 		Record: DNSRecord{
 			Type:  src.DnsRecordType,
 			Name:  src.DnsRecordName,
@@ -195,6 +237,14 @@ func NewPendingDomain(orderNo, domain string, primary bool) Domain {
 // 未识别的取值一律当作 pending：上游新增状态值时不应该让本服务出错，
 // 而 pending 是「还不能签发」这一侧的安全默认值——
 // 猜成 verified 会让平台在上游还没验证通过时就往下走。
+//
+// **真实上游给的是数字码**：2001 未验证、2002 已验证（Mock 给的是
+// "pending" / "verified" 这类字符串，两张表都要有）。
+//
+// 上游只有两态，分不出平台的 pending（尚未提交）与 verifying（已提交
+// 待校验），这里取更保守的 pending——不声称「正在验证中」。
+// 代价是：用户提交验证后再刷新材料，本地的 verifying 会被上游的 2001
+// 打回 pending。这是已知的行为差异，见 docs/07。
 func mapUpstreamDomainStatus(s string) DomainStatus {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "verified", "valid", "success", "active":
@@ -205,6 +255,11 @@ func mapUpstreamDomainStatus(s string) DomainStatus {
 		return DomainFailed
 	case "expired":
 		return DomainExpired
+	// 真实上游的数字码。
+	case "2002":
+		return DomainVerified
+	case "2001":
+		return DomainPending
 	default:
 		return DomainPending
 	}

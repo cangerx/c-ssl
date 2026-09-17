@@ -127,10 +127,27 @@ func buildFoxSSL(cfg *config.Config) (foxssl.Client, *foxssl.MockClient, error) 
 		}
 		return client, client, nil
 
+	case foxssl.NameHTTP:
+		// 真实上游**不接收 FoxSSLWebhookSecret**：上游文档明确回调验签
+		// 用的就是 API Key（见 foxssl.HTTPOptions.APIKey）。把它传进去
+		// 会让所有回调因为签名不匹配被拒，而错误信息只会说「签名不匹配」。
+		//
+		// 那个配置项仍然保留：Mock 上游自己签自己验，用独立密钥是合理的。
+		client, err := foxssl.NewHTTPClient(foxssl.HTTPOptions{
+			BaseURL: cfg.FoxSSLBaseURL,
+			APIKey:  cfg.FoxSSLAPIKey,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("构造真实证书上游失败: %w", err)
+		}
+		// 第二个返回值为 nil：真实上游没有 Mock 的控制方法，
+		// 开发辅助接口会因此不注册（见 router 里的说明）。
+		return client, nil, nil
+
 	default:
-		// 真实上游在 Phase 5 接入（见 docs/06 第 10 节）。
 		return nil, nil, fmt.Errorf(
-			"未实现的证书上游 %q：当前仅支持 %s", cfg.FoxSSLProvider, foxssl.NameMock)
+			"未实现的证书上游 %q：当前仅支持 %s 与 %s",
+			cfg.FoxSSLProvider, foxssl.NameMock, foxssl.NameHTTP)
 	}
 }
 

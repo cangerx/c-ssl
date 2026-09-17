@@ -50,10 +50,16 @@ type Config struct {
 	// 非空是硬要求：适配层拒绝用空 Key 构造，因为「忘记配置」静默变成
 	// 「用一个空 Key 调用」时，上游侧的错误信息通常与凭证无关，排查方向会跑偏。
 	FoxSSLAPIKey string
-	// FoxSSLWebhookSecret 是上游回调的验签密钥。
+	// FoxSSLWebhookSecret 是 **Mock 上游**的回调验签密钥。
 	//
-	// 它是回调接口唯一的身份凭证——那个接口不套登录鉴权。密钥为空时
-	// 任何人都能算出 HMAC 并伪造事件，把订单推进到已签发。
+	// 它只在 FOXSSL_PROVIDER=mock 时被使用。真实上游按官方文档用 API Key
+	// 做 HMAC 验签（见 foxssl.HTTPOptions.APIKey），没有独立的 webhook
+	// secret——给真实上游配一个，会让所有回调因为签名不匹配被拒，
+	// 而错误信息只会说「签名不匹配」。
+	//
+	// 对 Mock 来说它仍是必需且必须够长的：Mock 的回调接口不套登录鉴权，
+	// 密钥为空或可被暴力枚举时，任何人都能算出 HMAC 伪造事件，
+	// 把订单推进到已签发。
 	FoxSSLWebhookSecret string
 
 	// TrustProxy 决定是否采信 X-Forwarded-For 等转发头来判定客户端 IP。
@@ -166,7 +172,10 @@ func (c *Config) validate() error {
 	if c.FoxSSLAPIKey == "" {
 		missing = append(missing, "FOXSSL_API_KEY")
 	}
-	if c.FoxSSLWebhookSecret == "" {
+	// 回调密钥只有 Mock 上游需要：真实上游用 API Key 验签（见字段说明）。
+	// 无条件要求它，会逼着运维去配一个用不上的密钥——而那个密钥一旦
+	// 被当成真的用起来，全部回调都会验签失败。
+	if c.FoxSSLProvider == foxsslProviderMock && c.FoxSSLWebhookSecret == "" {
 		missing = append(missing, "FOXSSL_WEBHOOK_SECRET")
 	}
 	if len(missing) > 0 {
@@ -189,7 +198,10 @@ func (c *Config) validate() error {
 		}
 		// 与支付回调同理：密钥短到能被暴力枚举时，验签只是一道装饰，
 		// 攻击者能自己算出合法签名，伪造事件把订单推进到已签发。
-		if len(c.FoxSSLWebhookSecret) < 32 {
+		//
+		// 只对 Mock 上游校验：真实上游的验签密钥是 API Key，
+		// 长度由上游决定，平台管不着。
+		if c.FoxSSLProvider == foxsslProviderMock && len(c.FoxSSLWebhookSecret) < 32 {
 			return fmt.Errorf("非开发环境的 FOXSSL_WEBHOOK_SECRET 长度不足 32 位")
 		}
 	}

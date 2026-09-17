@@ -9,13 +9,26 @@
 //
 // ── 两条必须守住的约定 ──────────────────────────────
 //
-//  1. CreateOrder 以 MerchantOrderNo 为幂等键。上游按商户订单号去重，
-//     重复提交返回同一个上游订单。这是「网络超时后重试不会产生第二张证书」
-//     的唯一保证——平台拿不到「上一次到底成没成功」的答案时只能重试，
-//     如果上游不去重，重试就会真的下一单，用户被签两张证书、平台被扣两次钱。
+//  1. **CreateOrder 不幂等，重试前必须反查。**
+//
+//     这一条原本写的是反过来的：以为上游按商户订单号去重，所以
+//     「超时后重试不会产生第二张证书」。上游文档推翻了它——下单接口
+//     的请求体里**没有任何商户侧标识**（只有年限、验证方式、CSR、
+//     域名、联系人、企业信息、回调地址），orderNo 由上游生成后返回。
+//
+//     也就是说「用同一个商户订单号重试」这条路根本不存在：重复提交
+//     就是真的再买一张证书，平台被扣两次钱，而且每次都是真的。
+//
+//     所以结果未知时的流程是：**先 FindOrder 反查**（按常用名称 +
+//     下单前后的时间窗口），确认上游没有匹配的单，才允许重试。
+//     这条流程还没有实现（补偿轮询整条链路是空的），在那之前
+//     真实上游的 CreateOrder 一旦结果未知，订单只能停在 submitting
+//     等人工介入——这是安全的，不会花错钱。
 //
 //  2. 上游状态一律以**原文**返回，本包不做翻译。
 //     上游新增状态值时不应该让本服务出错，映射成平台状态是订单域的职责。
+//     原文包括：订单/证书状态码（"1002"、"3004"）、域名验证状态码
+//     （"2001"、"2002"）、响应侧的验证方式常量名（HTTP_CSR_HASH 等）。
 package foxssl
 
 import (
@@ -69,22 +82,37 @@ type Organization struct {
 
 // CreateOrderRequest 是在上游创建订单所需的信息。
 type CreateOrderRequest struct {
-	// MerchantOrderNo 是平台订单号，同时是上游侧的幂等键。
+	// MerchantOrderNo 是平台订单号。
 	//
-	// 必须是平台的 order_no 而不是随机值：重试时要能构造出同一个值，
-	// 否则上游去重无从谈起。
+	// **它不是上游侧的幂等键。** 上游的下单接口不接受任何商户标识，
+	// 所以这个值不会被发送出去，只用于日志与本地关联。
+	// 保留字段而不是删掉：出问题时最需要的信息就是「这次调用属于哪张
+	// 平台订单」，而调用点手上有的是订单号，不是上游订单号。
 	MerchantOrderNo string
 	// UpstreamProductID 是上游的产品编号，与平台产品 ID 不是一回事。
+	// 它是请求路径的一部分（/certificates/id/:pNo）。
 	UpstreamProductID int
 	Years             int
 	KeyAlgorithm      string
-	// Domains 第一个是主域名。
+	// DcvMethod 是下单时要指定的域名验证方式。
+	//
+	// **上游把它列为必填**，而平台把「选哪种方式」放在域名验证阶段，
+	// 两者错位。所以调用方在下单时先给一个初始值（取产品声明的第一个
+	// 可用方式），用户提交验证时再按实际选择走。取值是平台侧的
+	// rules.DcvMethod。
+	DcvMethod string
+	// Domains 第一个是主域名。上游只接收主域名之外的 SAN，
+	// 主域名由它从 CSR 里取。
 	Domains []string
 	// CSR 是证书签名请求。为空表示由上游代生成，此时私钥在上游手里。
-	CSR          string
-	Contact      Contact
+	CSR     string
+	Contact Contact
+	// Organization 只有 OV / EV 需要。上游对缺企业信息的 OV / EV
+	// 返回 7100，所以这里为空时上游会明确拒绝，不会静默降级成 DV。
 	Organization *Organization
 	// NotifyURL 是上游推送事件的地址。
+	//
+	// 不传则上游不推送任何事件，平台只能靠轮询拿状态。
 	NotifyURL string
 }
 
@@ -176,9 +204,48 @@ type VerifyDomainsRequest struct {
 // ReissueRequest 是重签入参。
 type ReissueRequest struct {
 	UpstreamOrderNo string
-	// CSR 为空表示沿用原证书的 CSR。
-	CSR    string
+	// CSR **必须提供**。上游把重签的 csr 列为必填，不接受「沿用原证书」
+	// 这种省略——所以调用方要把它存的 CSR 原文重新提交一次。
+	CSR string
+	// DcvMethod 是重签后的验证方式，上游必填。取值是平台侧的 rules.DcvMethod。
+	DcvMethod string
+	// Domains 是重签后的域名列表，第一个是主域名。
+	Domains []string
+	// Reason 是平台侧记录的重签原因，只用于本地审计。
+	// 上游没有对应参数，不会被发送。
 	Reason string
+}
+
+// FindOrderRequest 是反查上游订单的条件。
+//
+// 反查是 CreateOrder 不幂等的必要配套：结果未知时不能直接重试，
+// 得先看看上游到底建没建单（见包注释的约定 1）。
+type FindOrderRequest struct {
+	// CommonName 是常用名称（域名或公司名）。空表示不按它过滤。
+	CommonName string
+	// CreatedAfter / CreatedBefore 限定订单创建时间窗口，零值表示不限。
+	//
+	// **窗口要卡得足够窄。** 上游不提供按商户标识查询，反查只能靠
+	// 常用名称 + 时间，所以窗口太宽会把同一域名的历史订单一起捞回来，
+	// 反而被误判成「已经建过单了」而放弃重试——订单就永远卡住了。
+	CreatedAfter  time.Time
+	CreatedBefore time.Time
+}
+
+// OrderSummary 是反查结果里的一条上游订单。
+type OrderSummary struct {
+	UpstreamOrderNo string
+	ProductID       string
+	CommonName      string
+	OrderStatus     string
+	CertStatus      string
+	PrepareStatus   string
+	CreatedAt       time.Time
+	// PaidAt 是上游记录的支付时间，未支付时为零值。
+	//
+	// 它是判断「上游到底建没建单」最直接的一个字段：有了支付时间，
+	// 说明上游不但建了单，还扣了平台的预存余额。
+	PaidAt time.Time
 }
 
 // Certificate 是已签发的证书。
@@ -244,8 +311,9 @@ type Client interface {
 
 	// CreateOrder 在上游创建订单。
 	//
-	// 必须幂等：同一个 MerchantOrderNo 重复调用返回同一个上游订单，
-	// 不得在上游产生第二张证书。
+	// **不幂等：重复调用会在上游产生第二张证书并扣第二次钱。**
+	// 上游的下单接口没有任何商户侧标识，平台无法让它幂等。
+	// 结果未知时不得直接重试，必须先 FindOrder 反查。
 	CreateOrder(ctx context.Context, req CreateOrderRequest) (*CreateOrderResponse, error)
 
 	// OrderStatus 查询订单状态。
@@ -255,14 +323,24 @@ type Client interface {
 	ListDomains(ctx context.Context, upstreamOrderNo string) (*DomainsResponse, error)
 
 	// VerifyDomains 通知上游去实际校验这些域名。
+	//
+	// 真实上游这个接口的请求体在文档里缺失，适配器因此不实现它
+	// （调用返回 ErrNotSupported），见 methods.go 的说明。
 	VerifyDomains(ctx context.Context, req VerifyDomainsRequest) error
 
 	// ResendDcvEmail 重发域名验证邮件。
+	//
+	// domains 是平台侧的用法（只重发关心的那几个）。真实上游按**整单**
+	// 重发、不接受域名参数，所以适配器会忽略这个参数——多发给几个域名
+	// 是无害的，而报错会让这个平台侧用法彻底不可用。
 	ResendDcvEmail(ctx context.Context, upstreamOrderNo string, domains []string) error
 
 	// RegenerateDcvToken 重新生成验证 token，返回更新后的材料。
 	//
 	// 调用后旧 token 立即失效。
+	//
+	// 平台按**整单**操作，真实上游按**单个域名**操作（要传 domain）。
+	// 适配器负责这个翻译：逐个域名调用，最后重新拉一次材料。
 	RegenerateDcvToken(ctx context.Context, upstreamOrderNo string) (*DomainsResponse, error)
 
 	// DownloadCertificate 下载已签发的证书。
@@ -273,6 +351,13 @@ type Client interface {
 
 	// CancelOrder 取消订单。
 	CancelOrder(ctx context.Context, upstreamOrderNo string) error
+
+	// FindOrder 按常用名称与创建时间窗口反查上游订单。
+	//
+	// 它是 CreateOrder 不幂等的必要配套：结果未知时先用它确认上游
+	// 有没有建单，再决定是否重试。没有它，真实上游的补偿重试就只能
+	// 靠人工——而人工看着一堆「submitting」的订单是没法判断的。
+	FindOrder(ctx context.Context, req FindOrderRequest) ([]OrderSummary, error)
 
 	// ParseNotification 验签并解析上游回调。
 	//
@@ -297,6 +382,9 @@ var (
 	//
 	// 与「上游不可用」必须分开：前者说明我们记了一个上游不认的订单号，
 	// 是本地数据出了问题；后者只是暂时性故障，重试即可。
+	//
+	// 真实上游用业务码 6010 表达这件事（它所有接口都返回 HTTP 200），
+	// 所以 HTTP 404 不映射到这里——那个 404 只可能来自网关。
 	ErrOrderNotFound = errors.New("上游订单不存在")
 	// ErrUnavailable 表示上游暂时不可用，值得重试。
 	ErrUnavailable = errors.New("上游服务暂时不可用")
@@ -309,13 +397,23 @@ var (
 	// 单独建一个哨兵是为了能被认出来：这是平台的配置问题，不是用户的
 	// 问题，运维需要据此告警，而不是等用户来报「下单失败」。
 	ErrUnauthorized = errors.New("上游拒绝凭证")
+	// ErrPlatformBalance 表示平台在上游的预存余额不足。
+	//
+	// 与 ErrUnauthorized 同类：这是平台侧的问题，不是用户的问题，
+	// 运维需要据此告警。**刻意不包 ErrUnavailable**：重试不会让余额
+	// 变多，而把它当成「结果未知」会让订单一直冻着等补偿，
+	// 补偿用的还是那个不够的余额。
+	ErrPlatformBalance = errors.New("上游账户余额不足")
 	// ErrNotSupported 表示上游不支持该操作，重试没有意义。
 	ErrNotSupported = errors.New("上游不支持该操作")
 	// ErrInvalidSignature 表示回调签名校验失败。
 	ErrInvalidSignature = errors.New("上游回调签名校验失败")
-	// ErrMalformedPayload 表示验签通过但报文无法解析。
+	// ErrMalformedPayload 表示报文格式与预期不符。
 	//
-	// 与 ErrInvalidSignature 分开：前者意味着「有人在伪造」，
-	// 后者意味着「上游改了报文格式」，两者的处置方式完全不同。
-	ErrMalformedPayload = errors.New("上游回调报文格式错误")
+	// 两个方向共用：出站时是「上游改了响应格式」，入站时是
+	// 「验签通过但回调报文解析不了」。
+	//
+	// 与 ErrInvalidSignature 分开：后者意味着「有人在伪造」，
+	// 前者意味着「上游改了报文格式」，两者的处置方式完全不同。
+	ErrMalformedPayload = errors.New("上游报文格式错误")
 )

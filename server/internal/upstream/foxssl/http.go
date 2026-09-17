@@ -46,8 +46,8 @@ const (
 	// defaultTimeout 是单次尝试的总超时（含连接、发送、读取）。
 	//
 	// 上游回调要求 8 秒内返回，但那是**入站**方向的约束；出站调用
-	// 面对的是同一个上游，10 秒留出余量。真实值要按上游文档的
-	// 超时约定与实测 P99 调，见 HTTPOptions.Timeout。
+	// 面对的是同一个上游，10 秒留出余量。上游文档没有给超时约定，
+	// 真实值要按实测 P99 调，见 HTTPOptions.Timeout。
 	defaultTimeout = 10 * time.Second
 	// defaultMaxRetries 是自动重试的次数（不含首次）。
 	defaultMaxRetries = 2
@@ -59,25 +59,31 @@ const (
 	defaultMaxBodyBytes = 2 << 20
 )
 
-// 鉴权头的默认取值。
+// 鉴权头的取值。
 //
-// **这两个值是「业界最常见的约定」，不是确认过的值。** 待文档确认后
-// 只需改这一处，或由 HTTPOptions 覆盖。之所以给出默认值而不是要求必填：
-// 一个必填项在文档到位前只会让构造函数一直失败，而失败信息里
-// 也不会多出任何有用信息。
+// **这两个值来自上游官方文档，不是猜的。** 文档里每个接口的请求头都写着
+// `apiKey: <your apiKey>`，且不带任何前缀（不是 Authorization: Bearer）。
+//
+// 上一版这两个默认值是 Authorization + Bearer，那是「业界最常见的约定」。
+// 这个例子说明为什么默认值必须能被文档证伪：Bearer 写错时上游返回的
+// 是「参数不合法」一类的业务错误，看不出是鉴权头的问题。
 const (
-	defaultAuthHeader = "Authorization"
-	defaultAuthScheme = "Bearer"
+	defaultAuthHeader = "apiKey"
+	// defaultAuthScheme 为 "-" 表示凭证裸放，不加前缀。
+	defaultAuthScheme = "-"
 )
 
 // HTTPOptions 是真实上游客户端的构造参数。
 type HTTPOptions struct {
 	// BaseURL 是上游接口根地址，不含路径。
 	BaseURL string
-	// APIKey 是调用上游接口的凭证。
+	// APIKey 是调用上游接口的凭证，**同时是回调验签的密钥**。
+	//
+	// 上游文档给的验签示例是 crypto.createHmac('sha256', apiKey)——
+	// 没有独立的 webhook secret。所以这里没有第二个密钥字段：
+	// 多一个「看起来能用」的字段，运维就会去配它，然后所有回调
+	// 因为验签失败被拒，而错误信息只会说「签名不匹配」。
 	APIKey string
-	// WebhookSecret 是回调验签密钥。
-	WebhookSecret string
 
 	// Timeout 是单次尝试的超时，零值取 defaultTimeout。
 	//
@@ -107,14 +113,13 @@ type HTTPOptions struct {
 
 // HTTPClient 是真实 FoxSSL 上游的客户端。
 //
-// 目前只实现传输层。11 个业务方法待文档确认报文格式后补上，
-// 补完它才满足 Client 接口（见文件末尾）。
+// 实现了 foxssl.Client 的全部出站方法与入站回调解析，
+// 报文格式的出处与剩余缺口见文件末尾。
 type HTTPClient struct {
-	baseURL       string
-	apiKey        string
-	webhookSecret string
-	authHeader    string
-	authScheme    string
+	baseURL    string
+	apiKey     string
+	authHeader string
+	authScheme string
 
 	http         *http.Client
 	timeout      time.Duration
@@ -141,21 +146,17 @@ func NewHTTPClient(opts HTTPOptions) (*HTTPClient, error) {
 	if strings.TrimSpace(opts.APIKey) == "" {
 		return nil, fmt.Errorf("上游 API Key 未配置（FOXSSL_API_KEY）")
 	}
-	if strings.TrimSpace(opts.WebhookSecret) == "" {
-		return nil, fmt.Errorf("上游回调验签密钥未配置（FOXSSL_WEBHOOK_SECRET）")
-	}
 
 	c := &HTTPClient{
-		baseURL:       base,
-		apiKey:        opts.APIKey,
-		webhookSecret: opts.WebhookSecret,
-		authHeader:    opts.AuthHeader,
-		authScheme:    opts.AuthScheme,
-		timeout:       opts.Timeout,
-		maxRetries:    opts.MaxRetries,
-		maxBodyBytes:  opts.MaxBodyBytes,
-		sleep:         opts.Sleep,
-		rand:          opts.Rand,
+		baseURL:      base,
+		apiKey:       opts.APIKey,
+		authHeader:   opts.AuthHeader,
+		authScheme:   opts.AuthScheme,
+		timeout:      opts.Timeout,
+		maxRetries:   opts.MaxRetries,
+		maxBodyBytes: opts.MaxBodyBytes,
+		sleep:        opts.Sleep,
+		rand:         opts.Rand,
 	}
 	if c.authHeader == "" {
 		c.authHeader = defaultAuthHeader
@@ -197,9 +198,6 @@ func NewHTTPClient(opts HTTPOptions) (*HTTPClient, error) {
 }
 
 // Name 返回上游标识。
-//
-// 真实上游的标识取值要等文档/配置确认后与 FOXSSL_PROVIDER 对齐，
-// 见文件末尾的待办清单。
 func (c *HTTPClient) Name() string { return NameHTTP }
 
 // 上游操作名。用于日志、错误信息与重试策略查表。
@@ -214,6 +212,7 @@ const (
 	opDownloadCertificate = "DownloadCertificate"
 	opReissue             = "Reissue"
 	opCancelOrder         = "CancelOrder"
+	opFindOrder           = "FindOrder"
 )
 
 // idempotentOps 是「重复执行不会产生第二次副作用」的操作。
@@ -221,17 +220,23 @@ const (
 // 判据不是「这个接口看起来像查询」，而是**重复调用一次会不会改变上游状态**：
 //
 //   - 只读操作天然满足。
-//   - CreateOrder 满足，因为上游按 MerchantOrderNo 去重（见包注释的约定 1），
-//     重复提交返回同一个上游订单，不会产生第二张证书。
+//   - **CreateOrder 不满足。** 上游的下单接口没有任何商户侧标识，
+//     orderNo 由上游生成，所以重复提交就是真的再买一张证书。
+//     上一版把它列在这里，依据是「上游按商户订单号去重」——
+//     那条假设来自接口设计的直觉，被文档推翻了。这个错误的代价是
+//     平台重复下单、重复扣钱，而且每次都是真的。
+//     结果未知时的正确做法是先 FindOrder 反查，见 client.go 包注释的约定 1。
 //
-// 不在这里的操作（提交验证、重发邮件、重生成 token、重签、取消）都
+// 不在这里的操作（下单、提交验证、重发邮件、重生成 token、重签、取消）都
 // 会改变上游状态或消耗一次机会，见 safeToRetry。
 var idempotentOps = map[string]bool{
 	opBalance:             true,
 	opOrderStatus:         true,
 	opListDomains:         true,
 	opDownloadCertificate: true,
-	opCreateOrder:         true,
+	// FindOrder 是纯查询，且它正是「结果未知时该调的那个」——
+	// 如果连它都不能重试，补偿路径第一步就卡住了。
+	opFindOrder: true,
 }
 
 // errRequestNotSent 标记「请求字节没有发出去」的失败。
@@ -243,7 +248,11 @@ var idempotentOps = map[string]bool{
 // 还是应答在路上丢了」，而两者的处置完全不同。
 var errRequestNotSent = errors.New("请求未发出")
 
-// do 发一次出站请求，按需重试，返回成功应答的原始报文。
+// do 发一次出站请求，按需重试，返回成功应答里 **data 字段**的原始字节。
+//
+// 返回的是 data 而不是整个报文：信封（code / msg）的意义只在判断成败，
+// 判断完之后它对调用方没有任何用处，而把它一起返回会诱使每个调用点
+// 自己再解析一遍信封、再判断一次 code。
 //
 // 返回的错误总是包着本包的哨兵错误之一，调用方（订单域）据此判断
 // 「上游明确拒绝」还是「结果未知」。
@@ -264,7 +273,17 @@ func (c *HTTPClient) do(
 	for attempt := 0; ; attempt++ {
 		raw, retryAfter, err := c.attempt(ctx, op, method, endpoint, payload)
 		if err == nil {
-			return raw, nil
+			// HTTP 2xx 不等于成功：上游把业务失败也放在 HTTP 200 里，
+			// 真正的结果在报文体的 code 里（见 wire.go 开头第 1 条）。
+			// 所以信封解析必须在这个重试循环内——业务码 500 与 6801
+			// 都属于「结果未知」，值得重试，而在循环外解析就没机会重试了。
+			data, unwrapErr := c.unwrap(op, raw)
+			if unwrapErr == nil {
+				return data, nil
+			}
+			err = unwrapErr
+			// 上游没给 Retry-After（业务码在报文体里，与响应头无关）。
+			retryAfter = 0
 		}
 
 		// 调用方的 context 已经结束（超时或被取消）时不再重试：
@@ -287,6 +306,78 @@ func (c *HTTPClient) do(
 		if sleepErr := c.sleep(ctx, wait); sleepErr != nil {
 			return nil, err
 		}
+	}
+}
+
+// unwrap 拆开上游的统一信封，返回 data 字段。
+//
+// 上游所有接口都是 HTTP 200 + {code, msg, data}：业务失败（余额不足、
+// 参数错误、订单不存在）也用 200 返回，只在 code 里体现。只看 HTTP
+// 状态会把每一次业务失败都当成成功，然后拿着 data 里的 null 往下走——
+// 表现为「下单成功了但订单号是空的」这类莫名其妙的现象。
+func (c *HTTPClient) unwrap(op string, raw []byte) ([]byte, error) {
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		// 2xx 但报文体不是上游的信封格式。典型来源是中间网关插入的
+		// HTML 页或反向代理的 JSON 错误。
+		//
+		// 归入「结果未知」而不是「明确拒绝」：我们无法判断上游到底
+		// 执行没执行这次操作，保守方向是假设它执行了。
+		return nil, fmt.Errorf("%s: %w: 响应不是上游信封格式: %v（%s）",
+			op, ErrUnavailable, err, c.summarise(raw))
+	}
+	if env.Code != codeSuccess {
+		return nil, c.classifyBusiness(op, env.Code, env.Msg)
+	}
+	return env.Data, nil
+}
+
+// classifyBusiness 把上游业务码映射成哨兵错误。
+//
+// 这是与 classify（HTTP 状态层）并列的第二层，也是**上游文档到位之后
+// 才可能写对的一层**。两层的分工：
+//
+//   - classify 处理「报文都没正常回来」：网关 5xx、鉴权 401、限流 429。
+//   - classifyBusiness 处理「报文正常回来了，但业务码说没成」。
+//
+// 判据与 classify 一致：**上游到底有没有执行这次操作。**
+// 只有拿不准的那几个码归入「结果未知」，其余一律算明确拒绝。
+func (c *HTTPClient) classifyBusiness(op string, code int, msg string) error {
+	detail := fmt.Sprintf("code=%d msg=%s", code, strings.TrimSpace(msg))
+
+	switch code {
+	case codeServerError, codeOrderCreating:
+		// 500 是上游内部错误，6801 是「订单生成中」。两者都可能发生在
+		// 「上游已经开始建单」之后，我们拿不准它建没建成。
+		//
+		// 保守方向：按「结果未知」处理，让订单保持冻结。
+		// 判成明确拒绝会让订单域解冻并置失败，而上游那张证书可能
+		// 已经在签了——平台白付一笔钱。
+		return fmt.Errorf("%s: %w: %s", op, ErrUnavailable, detail)
+
+	case codeOrderNoInvalid:
+		// 上游明确说没有这个订单。与「上游不可用」必须分开：
+		// 前者说明我们记了一个上游不认的订单号，是本地数据出了问题，
+		// 重试没有意义。
+		return fmt.Errorf("%s: %w: %s", op, ErrOrderNotFound, detail)
+
+	case codeBalanceNotEnough:
+		// 平台在上游的预存余额不足。**不是用户的余额不足。**
+		//
+		// 与 ErrUnauthorized 同类：这是平台的配置/运营问题，运维要
+		// 据此告警，而不是等用户来报「下单失败」。也刻意不归入
+		// ErrUnavailable——重试不会让余额变多，而把它当成「结果未知」
+		// 会让订单一直冻着等补偿，补偿用的还是那个不够的余额。
+		return fmt.Errorf("%s: %w: 平台在上游的预存余额不足，需先充值: %s",
+			op, ErrPlatformBalance, detail)
+
+	default:
+		// 其余业务码都是「上游在业务逻辑里明确拒绝了」：参数不合法
+		// （6002/6006/6008）、产品不支持（6001/6004/6005）、年限不支持
+		// （6003）、订单已取消（6100）、域名已验证（6303）、
+		// 证书未签发（6200/6900）、联系人/企业信息字段错误（7000-7114）
+		// 等。重试一百次还是同一个结果，而且上游确定没有执行操作。
+		return fmt.Errorf("%s: 上游拒绝: %s", op, detail)
 	}
 }
 
@@ -421,16 +512,22 @@ func safeToRetry(op string, err error) bool {
 // 把「结果未知」判成「明确拒绝」会让订单域解冻，而平台已经欠上游
 // 一张证书的钱；反过来会让用户的钱永远冻着。
 //
-// HTTP 状态这一层是通用的，可以直接写死；业务错误码那一层完全由
-// 上游文档决定，见文件末尾的待办清单。
+// 这是**第一层**，只处理「报文没能正常回来」的情况。上游把业务失败
+// 放在 HTTP 200 的报文里，那一层在 classifyBusiness。
 func (c *HTTPClient) classify(op string, status int, body []byte) error {
 	detail := c.summarise(body)
 
 	switch {
 	case status == http.StatusNotFound:
-		// 上游没有这个订单。与「上游不可用」必须分开：前者说明我们记了
-		// 一个上游不认的订单号，是本地数据出了问题，重试没有意义。
-		return fmt.Errorf("%s: %w: 上游返回 404 %s", op, ErrOrderNotFound, detail)
+		// **不再当成「上游订单不存在」。** 上游用业务码 6010 表达这件事，
+		// 而它所有接口都返回 HTTP 200，所以这里的 404 只可能来自
+		// 网关、反向代理或路径写错。
+		//
+		// 判成 ErrOrderNotFound 会让订单域解冻并置失败——如果 404 其实是
+		// 网关抖动，那一单就被白白判死了。按「结果未知」处理最坏只是
+		// 多冻一会儿，等人工或补偿收敛。
+		return fmt.Errorf("%s: %w（HTTP 404，可能来自网关而非上游）%s",
+			op, ErrUnavailable, detail)
 
 	case status == http.StatusUnauthorized, status == http.StatusForbidden:
 		// 凭证问题。**不归入 ErrUnavailable**：鉴权发生在业务逻辑之前，
@@ -443,18 +540,14 @@ func (c *HTTPClient) classify(op string, status int, body []byte) error {
 		return fmt.Errorf("%s: %w（HTTP %d）%s", op, ErrUnavailable, status, detail)
 
 	case status == http.StatusConflict:
-		// 409 的语义要等文档确认，先按「结果未知」处理。
-		//
-		// 保守方向是这样定的：如果 409 表示「商户订单号已存在」，那上游
-		// 其实已经建了单，判成「明确拒绝」会让订单域解冻——平台白付
-		// 一张证书。判成「未知」最坏只是让订单多冻一会儿，等补偿流程
-		// 按同一个商户订单号重试就能收敛。
-		return fmt.Errorf("%s: %w（HTTP 409，语义待文档确认）%s", op, ErrUnavailable, detail)
+		// 上游文档里没有 409。保留这一支只作防御：万一某个中间层
+		// 用它表达「请求冲突」，按「结果未知」处理是最保守的方向。
+		return fmt.Errorf("%s: %w（HTTP 409）%s", op, ErrUnavailable, detail)
 
 	default:
-		// 其余 4xx：参数、产品、域名等业务性拒绝，重试没有意义。
-		// 订单域据此解冻并置失败——这个方向是安全的，因为 4xx 意味着
-		// 上游在业务逻辑里明确拒绝了，没有建单。
+		// 其余 4xx：网关或代理在业务逻辑之外拒绝，重试没有意义。
+		// 归入「明确拒绝」是安全的——4xx 意味着上游没有进业务逻辑，
+		// 不会建单。
 		return fmt.Errorf("%s: 上游拒绝（HTTP %d）%s", op, status, detail)
 	}
 }
@@ -474,7 +567,7 @@ func (c *HTTPClient) summarise(body []byte) string {
 		// minSecretLen 是「值得在文本里抹掉」的凭证长度下限。
 		//
 		// 低于这个长度的凭证不参与替换：一是短凭证本来就不该出现在生产
-		// 配置里（非开发环境的回调密钥要求 ≥ 32 位），二是拿一个两三字符的
+		// 配置里（上游给的是长串 API Key），二是拿一个两三字符的
 		// 串去做全量替换会把无关文本一起改掉——一个值 "k" 的密钥能把
 		// 响应体里的 msg 抹成 m***g，错误信息直接失去可读性，
 		// 而那种「日志看起来怪怪的」比泄露更难被发现。
@@ -482,11 +575,10 @@ func (c *HTTPClient) summarise(body []byte) string {
 	)
 
 	text := string(bytes.ToValidUTF8(body, []byte("?")))
-	for _, secret := range []string{c.apiKey, c.webhookSecret} {
-		if len(secret) < minSecretLen {
-			continue
-		}
-		text = strings.ReplaceAll(text, secret, logger.Redact(secret))
+	// 只抹 API Key：它同时是调用凭证与回调验签密钥（见 HTTPOptions.APIKey），
+	// 也是唯一会出现在上游错误信息里的凭证。
+	if len(c.apiKey) >= minSecretLen {
+		text = strings.ReplaceAll(text, c.apiKey, logger.Redact(c.apiKey))
 	}
 	text = strings.Join(strings.Fields(text), " ")
 	if len(text) > maxLen {
@@ -557,40 +649,56 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// ── 待办：拿到文档后要补的部分 ────────────────────────
+// ── 上游接口对照表 ─────────────────────────────────
 //
-// 下面 11 个方法都要实现 Client 接口的对应方法，每个只需三件事：
-// 拼路径、调 c.do、解码。**在这之前不要猜任何路径与字段名。**
+// 事实来源是上游官方的 Postman 文档。出站方法在 methods.go，
+// 入站回调在 notify.go。
 //
-//	方法                  出站方式                   需要文档提供
-//	────────────────────────────────────────────────────────────────────
-//	Balance               GET  待确认                  路径、响应字段
-//	CreateOrder           POST 待确认                  路径、请求体、响应字段
-//	OrderStatus           GET  待确认                  路径、四个状态字段名
-//	ListDomains           GET  待确认                  路径、域名字段（含 {FQDN} 模板）
-//	VerifyDomains         PUT/POST 待确认              路径、请求体、验证方式取值表
-//	ResendDcvEmail        POST 待确认                  路径、请求体
-//	RegenerateDcvToken    POST 待确认                  路径、响应字段
-//	DownloadCertificate   GET  待确认                  路径、PEM 字段（是否 base64）
-//	Reissue               POST 待确认                  路径、请求体
-//	CancelOrder           POST 待确认                  路径、请求体
-//	ParseNotification     ─    签名方案已知，字段名待确认 见下
-//	Ack                   ─    已知                    见下
+//	平台方法              上游接口                                  状态
+//	──────────────────────────────────────────────────────────────────────
+//	Balance               GET  /finance/balance                     已实现
+//	CreateOrder           POST /certificates/id/:pNo                已实现
+//	OrderStatus           GET  /certificates/status/:orderNo        已实现
+//	ListDomains           GET  /certificates/domains/:orderNo       已实现
+//	VerifyDomains         PUT  /certificates/verifyDomains/:orderNo 阻塞（见下）
+//	ResendDcvEmail        PUT  /certificates/reSendDcvEmail/:orderNo 已实现
+//	RegenerateDcvToken    POST /certificates/dcv                    已实现
+//	DownloadCertificate   GET  /certificates/download/:orderNo      已实现
+//	Reissue               POST /certificates/reissue                已实现
+//	CancelOrder           GET  /certificates/cancel/:orderNo        已实现
+//	FindOrder             GET  /certificates/orders                 已实现
+//	ParseNotification     ─   回调（X-Webhook-Signature）            已实现
 //
-// 除路径与字段外，还要从文档里确认这四件事，它们会影响本文件已实现的逻辑：
+// 上游还有两个接口平台用不到，不实现：证书日志查询
+// （GET /certificates/ctLogs）、更新域名验证方式（PUT /certificates/dcv）。
+// 后者的请求体格式记在 docs/07 备查。
 //
-//  1. **业务错误码表。** 上游若是「HTTP 200 + 报文里带业务码」的风格，
-//     那么 c.classify 现在只处理了 HTTP 状态这一层，业务码那一层要补一个
-//     映射（哪些码算「明确拒绝」、哪些算「结果未知」）。这一层的方向错了
-//     会直接花错钱，见 classify 的说明。
-//  2. **409 的语义。** 现在按「结果未知」保守处理，见 classify。
-//  3. **各接口的幂等性。** idempotentOps 里 CreateOrder 按包注释的约定 1
-//     认定为幂等；其余写操作是否幂等要逐条核对，有幂等的可以加入。
-//  4. **限流约定。** 是否返回 429 与 Retry-After、有无 QPS 上限。
-//     有 QPS 上限的话，重试策略之外还要在调用侧做节流。
+// ── 还没闭合的缺口 ─────────────────────────────────
 //
-// 回调方向的签名方案文档已经明确（X-Webhook-Signature、HMAC-SHA256 +
-// Base64、对原始字节签名、应答 {"status":"success"}），可以直接实现；
-// 缺的是**回调报文的字段名**——Mock 里的
-// {event, orderNo, status, certId, domains[], occurredAt} 是 Mock 自定的，
-// 不能当成真实格式，否则线上会收到一堆「字段缺失」。
+// 这几件事在文档到位后暴露出来，都**不能靠猜**补上：
+//
+//  1. **提交域名验证（VerifyDomains）的请求体在文档里是缺失的。**
+//     文档给了路径与响应，但没有参数表，Postman 集合里这个条目
+//     连 originalRequest 都没有。所以这个方法直接返回 ErrNotSupported，
+//     见 methods.go 里的说明——发一个「看起来成功但什么都没做」的
+//     请求比报错更糟。
+//
+//  2. **notifyUrl 还没有接线。** 订单域的 submit 传的是空串，而上游
+//     只在收到 notifyUrl 时才会推送。也就是说真实上游环境下回调
+//     永远不会到达，状态同步只能靠轮询（OrderStatus 在生产代码里
+//     目前一次都没被调用）。这块与上游报文无关，是平台侧的接线工作。
+//
+//  3. **上游的 dns（响应侧 CNAME_CSR_HASH）平台侧没有对应取值。**
+//     平台只有 dns_txt 与 dns_cname，而这两个只对 certum 品牌开放。
+//     非 certum 品牌要提交 DNS 验证时，当前产品配置无法表达——
+//     见 toWireDcvMethod 的说明。
+//
+//  4. **文件验证的内容字段不在域名列表接口里。** 上游只返回
+//     fileDcvPath（文件名固定为 gsdv.txt）与 hashValue，没有单独的
+//     文件内容字段。适配器**刻意不填** FileContent：填 hashValue 是
+//     一个把握较高但未经验证的推断，猜错的后果是用户拿着错误的
+//     内容去配、验证不通过且难以排查；留空的后果只是文件验证不出现在
+//     可用方式里，用户改用 DNS 或邮件。联调时确认后补上。
+//
+//  5. **上游没有给限流约定。** 文档里没有 QPS 上限、没有 429 的说明。
+//     如果联调时遇到限流，除了本文件的退避重试，调用侧还要做节流。

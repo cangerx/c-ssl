@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,7 @@ const (
 	OpDownloadCertificate = "DownloadCertificate"
 	OpReissue             = "Reissue"
 	OpCancelOrder         = "CancelOrder"
+	OpFindOrder           = "FindOrder"
 	OpParseNotification   = "ParseNotification"
 )
 
@@ -284,8 +287,18 @@ func (c *MockClient) Balance(_ context.Context) (*Balance, error) {
 // CreateOrder 在上游创建订单。
 //
 // **幂等**：同一个 MerchantOrderNo 重复调用返回首次的结果，
-// 不产生第二个上游订单。真实上游同样按商户订单号去重，
-// 这是平台在网络超时后敢于重试的前提。
+// 不产生第二个上游订单。
+//
+// 这是 Mock 的**简化，真实上游不是这样**：它的下单接口不接受任何商户侧
+// 标识（请求体里没有商户订单号，orderNo 由上游生成），重复提交就是真的
+// 再买一张证书，见 client.go 包注释的约定 1。
+//
+// 保留这个简化行为，是为了让订单域的资金流程（冻结、结算、解冻）能在
+// 「上游配合重试」的前提下独立验收。真实上游下的安全重试走的是另一条路：
+// 先用 FindOrder 反查确认没建单。
+//
+// **所以不要用 Mock 去验证「结果未知后直接重试是安全的」**——
+// 那条结论在真实上游上不成立，而 Mock 会一路绿给你看。
 func (c *MockClient) CreateOrder(_ context.Context, req CreateOrderRequest) (*CreateOrderResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -553,6 +566,67 @@ func (c *MockClient) CancelOrder(_ context.Context, upstreamOrderNo string) erro
 	return nil
 }
 
+// ── 订单筛选（反查） ──────────────────────────────
+
+// FindOrder 按常用名称与创建时间窗口反查订单。
+//
+// 匹配语义刻意与真实上游保持一致：**只能按常用名称与创建时间过滤，
+// 不能按商户订单号查**。真实上游就是这样，而「补偿重试前先反查」
+// 这条路径只有在 Mock 也遵守同样约束时才是被真正测过的——
+// 如果 Mock 允许按商户订单号精确查找，反查逻辑写成「按订单号找」
+// 也能通过测试，然后在真实上游上失效。
+func (c *MockClient) FindOrder(
+	_ context.Context, req FindOrderRequest,
+) ([]OrderSummary, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.fail(OpFindOrder); err != nil {
+		return nil, err
+	}
+
+	want := strings.ToLower(strings.TrimSpace(req.CommonName))
+	out := make([]OrderSummary, 0, len(c.orders))
+	for _, o := range c.orders {
+		// 常用名称取主域名：真实上游的 commonName 就是 CSR 里的主域名。
+		if want != "" && strings.ToLower(o.commonName()) != want {
+			continue
+		}
+		if !req.CreatedAfter.IsZero() && o.createdAt.Before(req.CreatedAfter) {
+			continue
+		}
+		if !req.CreatedBefore.IsZero() && o.createdAt.After(req.CreatedBefore) {
+			continue
+		}
+		out = append(out, OrderSummary{
+			UpstreamOrderNo: o.upstreamOrderNo,
+			ProductID:       strconv.Itoa(o.productID),
+			CommonName:      o.commonName(),
+			OrderStatus:     o.orderStatus,
+			CertStatus:      o.certStatus,
+			PrepareStatus:   o.prepareStatus,
+			CreatedAt:       o.createdAt,
+			// Mock 下单即从预存余额扣款，所以支付时间就是创建时间。
+			// 真实上游对未支付订单返回 0，见 orderSummary 的映射。
+			PaidAt: o.createdAt,
+		})
+	}
+
+	// 最近的排在前面：反查时最关心的就是刚建的那一单。
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// commonName 返回订单的主域名。调用方必须持有 c.mu。
+func (o *mockOrder) commonName() string {
+	if len(o.domains) == 0 {
+		return ""
+	}
+	return o.domains[0]
+}
+
 // ── 入站 ──────────────────────────────────────────
 
 // Ack 返回上游约定的成功应答。
@@ -596,13 +670,6 @@ func EncodeNotification(n *Notification) ([]byte, error) {
 		msg.OccurredAt = n.OccurredAt.Unix()
 	}
 	return json.Marshal(msg)
-}
-
-// Sign 计算报文的签名：HMAC-SHA256 后取 Base64。
-func Sign(secret string, raw []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(raw)
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // ParseNotification 验签并解析上游回调。

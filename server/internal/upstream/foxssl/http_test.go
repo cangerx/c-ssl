@@ -24,6 +24,8 @@ type callLog struct {
 	headers []http.Header
 	bodies  [][]byte
 	paths   []string
+	methods []string
+	queries []string
 }
 
 func (l *callLog) record(r *http.Request, body []byte) {
@@ -32,6 +34,8 @@ func (l *callLog) record(r *http.Request, body []byte) {
 	l.headers = append(l.headers, r.Header.Clone())
 	l.bodies = append(l.bodies, body)
 	l.paths = append(l.paths, r.URL.Path)
+	l.methods = append(l.methods, r.Method)
+	l.queries = append(l.queries, r.URL.RawQuery)
 }
 
 func (l *callLog) count() int {
@@ -47,6 +51,20 @@ func (l *callLog) first() (http.Header, []byte) {
 		return nil, nil
 	}
 	return l.headers[0], l.bodies[0]
+}
+
+// call 返回第 i 次请求的方法、路径、查询串与请求体。
+//
+// 报文层的断言要看的是「打到哪个路径上、用的哪个方法」：上游有两个接口
+// 共用 /certificates/dcv，靠 HTTP 方法区分（POST 重生成 token、
+// PUT 改验证方式），只断言路径抓不出写错方法这一类错误。
+func (l *callLog) call(i int) (method, path, query string, body []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if i < 0 || i >= len(l.methods) {
+		return "", "", "", nil
+	}
+	return l.methods[i], l.paths[i], l.queries[i], l.bodies[i]
 }
 
 // newHTTPTestClient 起一个假上游，返回指向它的客户端与请求记录。
@@ -70,9 +88,6 @@ func newHTTPTestClient(
 	opts.BaseURL = srv.URL
 	if opts.APIKey == "" {
 		opts.APIKey = testAPIKey
-	}
-	if opts.WebhookSecret == "" {
-		opts.WebhookSecret = testWebhookSecret
 	}
 	if opts.Timeout == 0 {
 		opts.Timeout = 2 * time.Second
@@ -100,6 +115,27 @@ func alwaysStatus(status int, body string) http.HandlerFunc {
 	}
 }
 
+// okEnvelope 拼一个上游的成功信封。
+//
+// 上游所有接口都是 HTTP 200 + {code, msg, data}，业务失败也在 200 里，
+// 所以「成功的假上游」必须返回信封而不是裸 JSON——裸 JSON 会被判成
+// 「响应不是上游信封格式」而走「结果未知」分支，用例会以一个与预期
+// 完全无关的理由失败。
+func okEnvelope(data string) string {
+	if data == "" {
+		return `{"code":200,"msg":"ok","data":null}`
+	}
+	return `{"code":200,"msg":"ok","data":` + data + `}`
+}
+
+// businessEnvelope 拼一个业务失败的信封（**HTTP 状态仍然是 200**）。
+//
+// 这是上游最反直觉的一点：余额不足、参数错误、订单不存在都用 200 返回。
+// 用它构造用例，才能测到 classifyBusiness 那一层。
+func businessEnvelope(code int, msg string) string {
+	return fmt.Sprintf(`{"code":%d,"msg":%q,"data":null}`, code, msg)
+}
+
 // ── 构造与配置 ────────────────────────────────────
 
 // TestNewHTTPClientRejectsMissingCredentials 验证凭证缺失时拒绝构造。
@@ -111,11 +147,10 @@ func TestNewHTTPClientRejectsMissingCredentials(t *testing.T) {
 		name string
 		opts HTTPOptions
 	}{
-		{"地址为空", HTTPOptions{APIKey: "k", WebhookSecret: "s"}},
-		{"地址没有协议前缀", HTTPOptions{BaseURL: "api.example.com", APIKey: "k", WebhookSecret: "s"}},
-		{"API Key 为空", HTTPOptions{BaseURL: "https://api.example.com", WebhookSecret: "s"}},
-		{"API Key 只有空白", HTTPOptions{BaseURL: "https://api.example.com", APIKey: "  ", WebhookSecret: "s"}},
-		{"回调密钥为空", HTTPOptions{BaseURL: "https://api.example.com", APIKey: "k"}},
+		{"地址为空", HTTPOptions{APIKey: "k"}},
+		{"地址没有协议前缀", HTTPOptions{BaseURL: "api.example.com", APIKey: "k"}},
+		{"API Key 为空", HTTPOptions{BaseURL: "https://api.example.com"}},
+		{"API Key 只有空白", HTTPOptions{BaseURL: "https://api.example.com", APIKey: "  "}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -132,9 +167,8 @@ func TestNewHTTPClientRejectsMissingCredentials(t *testing.T) {
 // 调用方的连接和 goroutine 一起吃掉，而且不会有任何报错。
 func TestHTTPClientDefaults(t *testing.T) {
 	c, err := NewHTTPClient(HTTPOptions{
-		BaseURL:       "https://api.example.com/",
-		APIKey:        "k",
-		WebhookSecret: "s",
+		BaseURL: "https://api.example.com/",
+		APIKey:  "k",
 	})
 	if err != nil {
 		t.Fatalf("构造失败: %v", err)
@@ -160,26 +194,33 @@ func TestHTTPClientDefaults(t *testing.T) {
 
 // TestAuthorizeHeader 验证凭证注入。
 //
-// 头名与格式是**待文档确认**的默认约定，这条测试钉住的是「改起来只有一处」：
-// 覆盖 HTTPOptions 就能改，不需要动 do 里的任何逻辑。
+// 头名与格式来自上游官方文档：每个接口的请求头都写着
+// `apiKey: <your apiKey>`，且不带前缀。上一版这里是
+// Authorization + Bearer，那是「业界最常见的约定」——这个例子说明
+// 默认值必须能被文档证伪。
 func TestAuthorizeHeader(t *testing.T) {
-	c, log := newHTTPTestClient(t, HTTPOptions{}, alwaysStatus(200, `{}`))
+	c, log := newHTTPTestClient(t, HTTPOptions{}, alwaysStatus(200, okEnvelope("")))
 	if _, err := c.do(context.Background(), opOrderStatus, http.MethodGet, "/x", nil); err != nil {
 		t.Fatalf("调用失败: %v", err)
 	}
 	header, _ := log.first()
-	if got := header.Get("Authorization"); got != "Bearer "+testAPIKey {
-		t.Errorf("默认应为 Bearer 前缀，实际 %q", got)
+	if got := header.Get("apiKey"); got != testAPIKey {
+		t.Errorf("默认应在 apiKey 头里裸放凭证，实际 %q", got)
+	}
+	// 反向断言：不能同时带上 Authorization。带上它不会让上游报错，
+	// 只会让人以为凭证是那样传的。
+	if got := header.Get("Authorization"); got != "" {
+		t.Errorf("不应额外注入 Authorization 头，实际 %q", got)
 	}
 
-	c2, log2 := newHTTPTestClient(t, HTTPOptions{AuthHeader: "X-Api-Key", AuthScheme: "-"},
-		alwaysStatus(200, `{}`))
+	c2, log2 := newHTTPTestClient(t, HTTPOptions{AuthHeader: "X-Api-Key", AuthScheme: "Bearer"},
+		alwaysStatus(200, okEnvelope("")))
 	if _, err := c2.do(context.Background(), opOrderStatus, http.MethodGet, "/x", nil); err != nil {
 		t.Fatalf("调用失败: %v", err)
 	}
 	header2, _ := log2.first()
-	if got := header2.Get("X-Api-Key"); got != testAPIKey {
-		t.Errorf("裸放模式下应原样传凭证，实际 %q", got)
+	if got := header2.Get("X-Api-Key"); got != "Bearer "+testAPIKey {
+		t.Errorf("覆盖头名与前缀后应生效，实际 %q", got)
 	}
 }
 
@@ -192,7 +233,7 @@ func TestAuthorizeHeader(t *testing.T) {
 // （见 order.isUnknownResult）。所以这里逐条钉住每个状态码落在哪一边。
 func TestClassifyHTTPStatus(t *testing.T) {
 	client, err := NewHTTPClient(HTTPOptions{
-		BaseURL: "https://api.example.com", APIKey: "k", WebhookSecret: "s",
+		BaseURL: "https://api.example.com", APIKey: "k",
 	})
 	if err != nil {
 		t.Fatalf("构造失败: %v", err)
@@ -211,8 +252,12 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{422, false, nil, "同上，校验失败"},
 		{401, false, ErrUnauthorized, "鉴权在业务逻辑之前，确定没建单"},
 		{403, false, ErrUnauthorized, "同上"},
-		{404, false, ErrOrderNotFound, "上游不认这个订单号，重试无用"},
-		{409, true, nil, "语义待文档确认，保守方向是当成未知"},
+		// 404 **不再**当成「上游订单不存在」。上游用业务码 6010 表达这件事，
+		// 而它所有接口都返回 HTTP 200，所以这里的 404 只可能来自网关。
+		// 判成 ErrOrderNotFound 会让订单域解冻并置失败，而那一单可能
+		// 只是遇上了网关抖动。
+		{404, true, nil, "只可能来自网关，保守方向是当成未知"},
+		{409, true, nil, "上游文档里没有 409，防御性按未知处理"},
 		{429, true, nil, "限流，请求可能已被处理"},
 		{500, true, nil, "上游内部错误，可能已经执行了"},
 		{502, true, nil, "网关错误，可能已经执行了"},
@@ -249,7 +294,7 @@ func TestClassifyHTTPStatus(t *testing.T) {
 // 上游偶尔会把收到的凭证原样回显在错误里（"invalid api_key: xxx"），
 // 而错误信息会进日志、日志会被采集和转发。一次回显就是一次泄露。
 func TestCredentialNeverLeaksIntoError(t *testing.T) {
-	echo := `{"error":"invalid api_key: ` + testAPIKey + `","secret":"` + testWebhookSecret + `"}`
+	echo := `{"error":"invalid api_key: ` + testAPIKey + `"}`
 	c, _ := newHTTPTestClient(t, HTTPOptions{}, alwaysStatus(401, echo))
 
 	_, err := c.do(context.Background(), opBalance, http.MethodGet, "/x", nil)
@@ -260,9 +305,6 @@ func TestCredentialNeverLeaksIntoError(t *testing.T) {
 	if strings.Contains(msg, testAPIKey) {
 		t.Errorf("错误信息泄露了 API Key：%s", msg)
 	}
-	if strings.Contains(msg, testWebhookSecret) {
-		t.Errorf("错误信息泄露了回调密钥：%s", msg)
-	}
 	// 反过来：抹掉之后仍然要留下可排查的线索，不能整个吃掉。
 	if !strings.Contains(msg, "invalid api_key") {
 		t.Errorf("脱敏不应把上游的错误描述一起吃掉：%s", msg)
@@ -272,7 +314,7 @@ func TestCredentialNeverLeaksIntoError(t *testing.T) {
 // TestSummariseTruncatesAndFlattens 验证响应体摘要不会把日志淹掉。
 func TestSummariseTruncatesAndFlattens(t *testing.T) {
 	c, err := NewHTTPClient(HTTPOptions{
-		BaseURL: "https://api.example.com", APIKey: "k", WebhookSecret: "s",
+		BaseURL: "https://api.example.com", APIKey: "k",
 	})
 	if err != nil {
 		t.Fatalf("构造失败: %v", err)
@@ -298,7 +340,7 @@ func TestSummariseTruncatesAndFlattens(t *testing.T) {
 // 而「日志看起来怪怪的」比泄露更难被发现——没人会为此报障。
 func TestSummariseIgnoresShortSecrets(t *testing.T) {
 	c, err := NewHTTPClient(HTTPOptions{
-		BaseURL: "https://api.example.com", APIKey: "k", WebhookSecret: "s",
+		BaseURL: "https://api.example.com", APIKey: "k",
 	})
 	if err != nil {
 		t.Fatalf("构造失败: %v", err)
@@ -358,18 +400,24 @@ func TestReadOpsAreRetriedOnTimeout(t *testing.T) {
 	}
 }
 
-// TestCreateOrderIsRetried 验证下单会重试。
+// TestCreateOrderIsNotRetried 验证下单**不会**自动重试。
 //
-// 依据是包注释里的约定 1：上游按 MerchantOrderNo 去重，重复提交返回
-// 同一个上游订单。少了这条性质，重试就真的会下第二单。
-func TestCreateOrderIsRetried(t *testing.T) {
+// 这条用例原先断言的是相反的结论，依据是包注释里的约定 1
+// 「上游按 MerchantOrderNo 去重」。上游文档推翻了它：下单接口的请求体里
+// **没有任何商户侧标识**，orderNo 由上游生成，重复提交就是真的再买一张
+// 证书、平台被扣两次钱。
+//
+// 所以这条断言的价值比看上去大：它钉住的是「平台不会自己把用户的钱
+// 花两遍」。如果将来有人为了让「偶发 503 自动恢复」而把 CreateOrder
+// 加回 idempotentOps，这里会立刻变红。
+func TestCreateOrderIsNotRetried(t *testing.T) {
 	c, log := newHTTPTestClient(t, HTTPOptions{}, alwaysStatus(503, `{}`))
 
 	if _, err := c.do(context.Background(), opCreateOrder, http.MethodPost, "/x", map[string]any{}); err == nil {
 		t.Fatal("503 应当返回错误")
 	}
-	if got := log.count(); got != 3 {
-		t.Errorf("下单应重试到上限（共 3 次），实际 %d 次", got)
+	if got := log.count(); got != 1 {
+		t.Errorf("下单不应重试（重试会产生第二张证书），实际发出 %d 次请求", got)
 	}
 }
 
@@ -389,7 +437,7 @@ func TestWriteOpsRetriedOnlyWhenRequestNotSent(t *testing.T) {
 		}),
 	}
 	c, err := NewHTTPClient(HTTPOptions{
-		BaseURL: "https://api.example.com", APIKey: "k", WebhookSecret: "s",
+		BaseURL: "https://api.example.com", APIKey: "k",
 		HTTPClient: dialFailure,
 		Sleep:      func(context.Context, time.Duration) error { return nil },
 		Rand:       func(int64) int64 { return 0 },
@@ -426,7 +474,7 @@ func TestWriteOpsRetriedOnlyWhenRequestNotSent(t *testing.T) {
 		}),
 	}
 	c2, err := NewHTTPClient(HTTPOptions{
-		BaseURL: "https://api.example.com", APIKey: "k", WebhookSecret: "s",
+		BaseURL: "https://api.example.com", APIKey: "k",
 		HTTPClient: afterSend,
 		Sleep:      func(context.Context, time.Duration) error { return nil },
 		Rand:       func(int64) int64 { return 0 },
@@ -530,17 +578,32 @@ func TestOversizedResponseRejected(t *testing.T) {
 //
 // 读体时多读一个字节才能区分「刚好等于上限」与「超限」；
 // 少读一个字节会让正常响应在边界上随机失败。
+//
+// 响应体必须是一个**合法的上游信封**：上限检查发生在信封解析之前，
+// 用一个不含 code 的填充串做用例，会走到「响应不是上游信封格式」
+// 那条分支上，测的就不是长度边界了。
 func TestExactLimitResponseAccepted(t *testing.T) {
-	const size = 128
-	c, _ := newHTTPTestClient(t, HTTPOptions{MaxBodyBytes: size},
-		alwaysStatus(200, strings.Repeat("x", size)))
+	const (
+		limit  = 128
+		prefix = `{"code":200,"msg":"ok","data":"`
+		suffix = `"}`
+	)
+	filler := strings.Repeat("x", limit-len(prefix)-len(suffix))
+	body := prefix + filler + suffix
+	if len(body) != limit {
+		t.Fatalf("用例自身的长度算错了：%d", len(body))
+	}
+
+	c, _ := newHTTPTestClient(t, HTTPOptions{MaxBodyBytes: limit},
+		alwaysStatus(200, body))
 
 	raw, err := c.do(context.Background(), opListDomains, http.MethodGet, "/x", nil)
 	if err != nil {
 		t.Fatalf("刚好等于上限的响应应被接受，实际 %v", err)
 	}
-	if len(raw) != size {
-		t.Errorf("响应体应完整返回，实际 %d 字节", len(raw))
+	// do 返回的是信封里的 data，不再包含外壳。
+	if want := `"` + filler + `"`; string(raw) != want {
+		t.Errorf("data 应完整返回，实际 %d 字节", len(raw))
 	}
 }
 

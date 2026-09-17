@@ -183,7 +183,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
 	o.Status = orderstate.Submitting
 
 	// 网络调用与事务③。
-	if err := s.submit(ctx, o); err != nil {
+	if err := s.submit(ctx, o, p.Capability()); err != nil {
 		return nil, mapError(err)
 	}
 
@@ -195,14 +195,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
 // Create 与补偿重试（RetrySubmit）共用这一条路径，两者的差异只在于
 // 入口处的状态校验——这样「上游调用成功后要做什么」只有一处实现，
 // 不会出现补偿路径漏掉某个字段的情况。
-func (s *Service) submit(ctx context.Context, o *Order) error {
+//
+// cap 是产品能力，只用来挑下单时要报给上游的初始验证方式，见 initialDcvMethod。
+func (s *Service) submit(ctx context.Context, o *Order, cap rules.Capability) error {
 	req := foxssl.CreateOrderRequest{
-		// 用本地订单号做上游的幂等键。重试时能构造出同一个值，
-		// 上游据此去重，因此重试不会产生第二张证书。
+		// MerchantOrderNo 只用于日志与本地关联。
+		// **它不是上游的幂等键**：上游下单接口不接受任何商户侧标识，
+		// 重复提交就是真的再买一张证书，见 foxssl 包注释的约定 1。
 		MerchantOrderNo:   o.OrderNo,
 		UpstreamProductID: o.UpstreamProductID,
 		Years:             o.Years,
 		KeyAlgorithm:      string(o.KeyAlgorithm),
+		DcvMethod:         string(initialDcvMethod(cap)),
 		Domains:           o.DomainNames(),
 		CSR:               o.CSR,
 		NotifyURL:         "",
@@ -236,8 +240,12 @@ func (s *Service) submit(ctx context.Context, o *Order) error {
 		// 就等于平台白付一张证书的钱——而上游那张证书还在，
 		// 后续对账时会发现一笔对不上的支出。
 		//
-		// 停在这里是安全的：上游按商户订单号幂等，补偿流程用同一个
-		// 订单号重试，无论上次成没成功，结果都会收敛到「只有一张证书」。
+		// 停在这里是安全的：钱还在冻结中，不会重复扣款，也不会白付。
+		//
+		// **但真实上游不能靠「按同一个订单号重试」来收敛**：它的下单接口
+		// 不接受商户订单号，重试就是真的再买一张证书。补偿必须先反查
+		// （foxssl.Client.FindOrder）确认上游没建单，这条流程还没实现，
+		// 所以真实上游下卡住的订单只能人工处理——见 foxssl 包注释的约定 1。
 		if isUnknownResult(err) {
 			slog.WarnContext(ctx, "上游调用结果未知，订单停在 submitting 等待补偿",
 				"order_no", o.OrderNo, "error", err)
@@ -327,8 +335,13 @@ func (s *Service) failOrder(ctx context.Context, o *Order, cause error) error {
 
 // RetrySubmit 重新提交一张卡在 submitting 的订单。
 //
-// 这是补偿入口，供后台任务或人工调用。它之所以安全，是因为上游
-// 按商户订单号幂等：无论上一次到底成没成功，重试都会收敛到同一个结果。
+// 这是补偿入口，供后台任务或人工调用。
+//
+// **它的安全性取决于上游幂等，而真实上游不幂等。** 在 Mock 上游下，
+// 无论上一次到底成没成功，重试都会收敛到同一个结果；真实上游下，
+// 直接重试会真的再买一张证书。所以真实上游启用后，这个入口必须先接
+// foxssl.Client.FindOrder 反查（确认上游没建单才重试），在那之前
+// 它只能用于 Mock 上游——见 foxssl 包注释的约定 1。
 func (s *Service) RetrySubmit(ctx context.Context, orderNo string) error {
 	o, err := s.repo.GetByNo(ctx, orderNo)
 	if err != nil {
@@ -345,7 +358,36 @@ func (s *Service) RetrySubmit(ctx context.Context, orderNo string) error {
 	}
 	o.Domains = domains
 
-	return mapError(s.submit(ctx, o))
+	// 补偿要用下单时那个验证方式，而平台没把它存在订单上，只能重新
+	// 从产品配置读。产品已下架时读不到——这时**不猜一个方式发出去**：
+	// 猜错会让上游侧记录的方式与用户看到的产品声明对不上，而补偿
+	// 卡住只是钱多冻一会儿，人工可以重新上架产品或手工处理。
+	p, err := s.products.Get(ctx, o.ProductID)
+	if err != nil {
+		return mapError(fmt.Errorf(
+			"补偿重试需要读取产品 %d 的验证方式配置: %w", o.ProductID, err))
+	}
+
+	return mapError(s.submit(ctx, o, p.Capability()))
+}
+
+// initialDcvMethod 选出下单时要报给上游的验证方式。
+//
+// 上游下单接口把 dcvMethod 列为必填，而平台把「选哪种方式」放在域名
+// 验证阶段，两者错位。所以下单时先给一个初始值。
+//
+// 取产品声明的**第一个**可用方式，而不是写死 dns：产品声明是运营配置的，
+// 顺序由他们控制，把哪种方式排在最前就等于表达了「这个产品的默认方式」。
+// 写死 dns 会让只支持邮件验证的产品直接下单失败（上游返回 6004）。
+//
+// 产品一个方式都没声明时返回空串，适配层会据此明确拒绝。这比猜一个
+// 方式发出去好：猜错的话，用户拿到的验证材料是另一种方式的，
+// 而界面上显示的又是产品声明的那几种，两边对不上，用户会以为自己配错了。
+func initialDcvMethod(cap rules.Capability) rules.DcvMethod {
+	if len(cap.DcvMethods) == 0 {
+		return ""
+	}
+	return cap.DcvMethods[0]
 }
 
 // ── 查询 ──────────────────────────────────────────
@@ -516,8 +558,14 @@ func (s *Service) Reissue(
 			"只有已签发的订单可以重签，当前状态为 %s", o.Status)
 	}
 
+	// 上游把重签的 csr 与 dcvMethod 都列为必填，不接受「沿用原证书的 CSR」
+	// 这种省略（省略会换回 6006「csr 不合法」）。所以这里要把订单上存的
+	// CSR 原文重新提交一次，并带上验证方式。
 	if err := s.upstream.Reissue(ctx, foxssl.ReissueRequest{
 		UpstreamOrderNo: o.UpstreamOrderNo,
+		CSR:             o.CSR,
+		DcvMethod:       string(initialDcvMethod(cap)),
+		Domains:         o.DomainNames(),
 		Reason:          reason,
 	}); err != nil {
 		return nil, mapError(fmt.Errorf("上游重签失败: %w", err))
@@ -1275,7 +1323,23 @@ func toDomains(orderNo string, src []foxssl.Domain) []Domain {
 // 调用方据此只记录不改状态——猜错方向的代价不对称：
 // 把未签发的订单猜成已签发，用户会拿到一个下载不了的证书入口；
 // 把已签发的猜成签发中，用户只是多等一会儿。
+//
+// ── 数字码是真实上游的形态 ────────────────────────
+//
+// Mock 上游用 "issued" 这类字符串，**真实上游用数字码**：订单状态
+// 1001-1006、证书状态 3002-3006、重签状态 5001-5004。所以两张表都要有。
+//
+// **需要人工介入的状态一律不映射。** 上游文档对 1003 / 1006 / 3003 / 3006
+// 的说明都是「请联系客服」，对 5004 的说明是「重签需要补差价但没有补交」。
+// 这几个状态不会自愈，而平台能做的自动动作只有「退款」——
+// 在不知道上游会不会人工修好的情况下退款，等于替上游做了决定。
+// 不映射的后果是订单停在原地、钱冻着，人工介入后仍可推进；
+// 映射错了的后果是钱已经退出去、证书又被签出来，对账时才发现。
+//
+// 同理，1001（未支付）也不映射：它同时出现在重签场景（配 5004），
+// 而重签的退款动作与首次下单不同，不能按同一套处理。
 var upstreamStateMap = map[string]orderstate.State{
+	// ── Mock 与上游的文字形态 ──
 	"waiting_dcv":               orderstate.WaitingDcv,
 	"waiting_domain_validation": orderstate.WaitingDcv,
 	"pending_validation":        orderstate.WaitingDcv,
@@ -1288,6 +1352,20 @@ var upstreamStateMap = map[string]orderstate.State{
 	"failed":                    orderstate.Failed,
 	"rejected":                  orderstate.Failed,
 	"error":                     orderstate.Failed,
+
+	// ── 真实上游的数字码 ──
+	// 订单状态码。1001 未支付、1003 提交 CA 异常、1006 提交 CA 超时
+	// 刻意不在表里，理由见上面的说明。
+	"1002": orderstate.Issuing, // 已支付
+	"1004": orderstate.Cancelled,
+	// 证书状态码。3003 / 3006 同 1003 / 1006，不映射。
+	"3002": orderstate.Issuing, // 已支付，等待签发
+	"3004": orderstate.Issued,
+	"3005": orderstate.Cancelled,
+	// 重签状态码。5004（需补差价未补）不映射。
+	"5001": orderstate.Issuing, // 重签申请中
+	"5002": orderstate.Issued,  // 重签申请成功
+	"5003": orderstate.Failed,  // 重签申请失败
 }
 
 // stateFromUpstream 映射上游状态，未识别时返回 fallback。
@@ -1403,6 +1481,20 @@ func mapError(err error) error {
 
 	case errors.Is(err, foxssl.ErrNotSupported):
 		return errs.Newf(errs.CodeInvalidOrderState, "%s", err.Error()).WithCause(err)
+
+	// 下面两条都是**平台侧**的问题，不是用户的问题。
+	//
+	// 映射成 502（上游侧问题）而不是 400：用户什么都没做错，而 400 会让
+	// 他去改参数重试，真正该做的却是我们这边充值或换凭证。
+	// 单独列出来而不是让它们落进 default，是为了让错误信息直接说清
+	// 「是平台侧的问题」——否则运维看到的是一条泛泛的内部错误。
+	case errors.Is(err, foxssl.ErrPlatformBalance):
+		return errs.Newf(errs.CodeUpstream,
+			"上游账户余额不足，暂时无法下单，请联系客服").WithCause(err)
+
+	case errors.Is(err, foxssl.ErrUnauthorized):
+		return errs.Newf(errs.CodeUpstream,
+			"上游拒绝了平台凭证，暂时无法下单，请联系客服").WithCause(err)
 
 	case errors.Is(err, foxssl.ErrOrderNotFound):
 		// 本地记了一个上游不认的订单号，是本地数据出了问题

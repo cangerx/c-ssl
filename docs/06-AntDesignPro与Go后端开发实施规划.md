@@ -264,31 +264,50 @@ FoxSSL 返回的 `fileDcvPath` 可能包含 `{FQDN}`，后端必须逐个域名�
 
 ## 5. FoxSSL 适配层
 
-业务服务只依赖接口，不直接依赖 HTTP 实现：
+业务服务只依赖接口，不直接依赖 HTTP 实现。以下为 `client.go` 里的实际接口（已按上游官方文档校正）：
 
 ```go
 type Client interface {
+    Name() string
     Balance(ctx context.Context) (*Balance, error)
-    CreateOrder(ctx context.Context, productID int, req CreateOrderRequest) (*CreateOrderResponse, error)
-    OrderStatus(ctx context.Context, orderNo string) (*OrderStatus, error)
-    ListDomains(ctx context.Context, orderNo string) (*DomainsResponse, error)
-    VerifyDomains(ctx context.Context, orderNo string) error
-    DownloadCertificate(ctx context.Context, orderNo string) (*Certificate, error)
+    // 不幂等：重复调用会在上游产生第二张证书并扣第二次钱。
+    CreateOrder(ctx context.Context, req CreateOrderRequest) (*CreateOrderResponse, error)
+    OrderStatus(ctx context.Context, upstreamOrderNo string) (*OrderStatus, error)
+    ListDomains(ctx context.Context, upstreamOrderNo string) (*DomainsResponse, error)
+    // 真实上游该接口请求体在文档里缺失，调用返回 ErrNotSupported（见下）。
+    VerifyDomains(ctx context.Context, req VerifyDomainsRequest) error
+    ResendDcvEmail(ctx context.Context, upstreamOrderNo string, domains []string) error
+    // 平台按整单操作，上游按单域名操作，适配器负责翻译。
+    RegenerateDcvToken(ctx context.Context, upstreamOrderNo string) (*DomainsResponse, error)
+    DownloadCertificate(ctx context.Context, upstreamOrderNo string) (*Certificate, error)
     Reissue(ctx context.Context, req ReissueRequest) error
-    CancelOrder(ctx context.Context, orderNo string) error
+    CancelOrder(ctx context.Context, upstreamOrderNo string) error
+    // CreateOrder 不幂等的必要配套：结果未知时先反查，再决定是否重试。
+    FindOrder(ctx context.Context, req FindOrderRequest) ([]OrderSummary, error)
+    // 验签与解析合并为一个方法，让「不验签就解析」这条路径不存在。
+    ParseNotification(raw []byte, signature string) (*Notification, error)
+    Ack() Ack
 }
 ```
 
-实现：
+文件划分（按职责，而不是按 Mock / 真实分文件——两者共用报文定义）：
 
 ```text
-internal/upstream/foxssl/http_client.go   真实 API
-internal/upstream/foxssl/mock_client.go   开发与自动化测试
-internal/upstream/foxssl/types.go         请求/响应模型
-internal/upstream/foxssl/errors.go        上游错误码映射
+internal/upstream/foxssl/client.go     接口、请求/响应模型、哨兵错误
+internal/upstream/foxssl/http.go       传输层：鉴权头、信封拆解、重试、错误分类
+internal/upstream/foxssl/methods.go    12 个出站方法的报文映射
+internal/upstream/foxssl/wire.go       上游报文定义（路径、请求体、响应体）
+internal/upstream/foxssl/notify.go     入站回调：验签、解析、应答体
+internal/upstream/foxssl/mock.go       开发与自动化测试用的模拟上游
 ```
 
-`apiKey` 只能存在服务端环境变量或密钥管理系统中，不能进入浏览器、前端构建产物和日志。
+接口的完整报文对照、状态码字典与错误码表见 `docs/07-FoxSSL上游接口对照.md`。
+
+三条容易踩错、已经写进代码注释的约定：
+
+1. **响应是 HTTP 200 + 业务码信封。** 上游把业务失败也放在 HTTP 200 里，成败在报文体的 `code`。所以错误分类分两层：HTTP 状态层（`classify`）与业务码层（`classifyBusiness`），只看 HTTP 状态会把每次业务失败当成功。
+2. **回调验签的密钥就是 API Key**，不是独立的 webhook secret。`FOXSSL_WEBHOOK_SECRET` 只服务于 Mock 上游，仅在 `FOXSSL_PROVIDER=mock` 时必填。
+3. **`apiKey` 是自定义请求头、取值裸放**（不带 `Bearer` 之类前缀），且不能与 `Authorization` 同时出现。它只能存在服务端环境变量或密钥管理系统中，不能进入浏览器、前端构建产物和日志；错误信息里出现该值时会被替换成掩码。
 
 ## 6. Webhook 与任务系统
 
@@ -296,9 +315,12 @@ FoxSSL Webhook：
 
 - 请求头：`X-Webhook-Signature`
 - 算法：HMAC-SHA256 + Base64
-- 签名输入：原始请求 body 字节
+- 签名密钥：**就是 API Key**（上游文档明确如此），不是独立的 webhook secret
+- 签名输入：原始请求 body 字节（先反序列化再重新序列化会改变字节，导致验签必然失败）
 - 8 秒内返回 `200` 和 `{"status":"success"}`
 - 按 `orderNo + status + payloadHash` 幂等处理
+
+上游回调报文里**没有事件类型字段**，只有 `status`。幂等键因此不含事件类型——不要拿 `statusDesc` 顶上，那是给人类看的文案（上游把它拼成了 `canceld`）。报文里还有一个已弃用的 `auth` 字段，只解析不使用。
 
 Webhook 接收接口只做验签、落库和投递任务，不在请求中执行耗时的证书下载或复杂业务。
 
@@ -311,7 +333,7 @@ Worker 负责：
 
 Cron 负责：
 
-- Webhook 兜底轮询
+- Webhook 兜底轮询：**先 `FindOrder` 反查再决定是否重试**，不能按商户订单号直接重下单（上游不接受商户标识，重复提交就是真买第二张证书）
 - 上游余额检查
 - 用户钱包与订单对账
 - 长时间未验证提醒
@@ -500,12 +522,21 @@ audit_logs
 
 ### Phase 3：FoxSSL 真实签发
 
-- 真实下单
-- DCV 域名列表
-- Webhook
-- 状态轮询
-- 证书下载
-- 取消和重签
+上游官方文档（Postman documenter）到位后，适配器已按真实报文实现完毕；剩下的是平台侧接线。逐条状态：
+
+| 条 | 适配器 | 平台侧 | 说明 |
+|----|--------|--------|------|
+| 真实下单 | 已完成 | 已完成 | `CreateOrder` 报文映射 + `submit` 已接真实客户端。**注意不幂等**，结果未知时须先 `FindOrder` 反查 |
+| DCV 域名列表 | 已完成 | 已完成 | `ListDomains`；`dnsNames` 兼容数组与裸字符串两种形态；响应侧验证方式走 `mapUpstreamDcvMethod` 翻译，不能直接当平台取值存库 |
+| Webhook | 已完成 | **待接线** | 验签、解析、应答体均已实现；但订单域 `submit` 传的 `notifyUrl` 是空串，上游只在收到该参数时才推送 |
+| 状态轮询 | 已完成 | **未开始** | `OrderStatus` 在适配器与 Mock 里都可用，但生产代码里一次都没被调用；`cmd/cron` 仍是 Phase 0 的桩 |
+| 证书下载 | 已完成 | 已完成 | `DownloadCertificate`；时间戳为毫秒，空 `content` 归入「结果未知」而非成功 |
+| 取消和重签 | 已完成 | 已完成 | `CancelOrder` 用 GET；`Reissue` 带 CSR / 验证方式 / 域名，差价 `priceDiff` 只记日志、不进结算 |
+| 提交域名验证 | **阻塞** | 未开始 | `VerifyDomains` 的请求体在上游文档里缺失（Postman 集合连 `originalRequest` 都没有），适配器直接返回 `ErrNotSupported`，需向上游确认参数格式 |
+
+**本阶段最要紧的下一步是状态轮询**：回调路径依赖 `notifyUrl` 接线，在它接通之前，订单状态没有任何自动同步手段。而 `cmd/cron` 与 `cmd/worker` 目前仍是桩，意味着「结果未知」的订单会一直冻着等人工补偿。
+
+顺带修正了 5 处被文档推翻的既有假设（详见 `docs/07`）：鉴权头不是 `Authorization: Bearer`；`CreateOrder` 不幂等；回调密钥不是独立 secret；HTTP 404 不等于上游订单不存在（上游用业务码 6010）；`domainNames` 不含主域名。
 
 ### Phase 4：Ant Design Pro 管理后台
 
