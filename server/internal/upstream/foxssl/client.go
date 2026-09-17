@@ -30,6 +30,11 @@ import (
 const (
 	// NameMock 是开发环境的模拟上游。
 	NameMock = "mock"
+	// NameHTTP 是真实上游。
+	//
+	// 取值与配置里 FOXSSL_PROVIDER 的对应关系待确认，见 http.go 末尾的
+	// 待办清单——配置校验目前只放行 mock。
+	NameHTTP = "foxssl"
 )
 
 // ── 出站请求与响应 ────────────────────────────────
@@ -295,6 +300,15 @@ var (
 	ErrOrderNotFound = errors.New("上游订单不存在")
 	// ErrUnavailable 表示上游暂时不可用，值得重试。
 	ErrUnavailable = errors.New("上游服务暂时不可用")
+	// ErrUnauthorized 表示上游拒绝了我们的凭证。
+	//
+	// **刻意不包 ErrUnavailable。** 鉴权发生在业务逻辑之前，上游确定
+	// 没有建单，因此订单域可以放心解冻；把它归入「结果未知」会让
+	// 每一张订单都冻着等补偿，而补偿用的还是同一份坏凭证。
+	//
+	// 单独建一个哨兵是为了能被认出来：这是平台的配置问题，不是用户的
+	// 问题，运维需要据此告警，而不是等用户来报「下单失败」。
+	ErrUnauthorized = errors.New("上游拒绝凭证")
 	// ErrNotSupported 表示上游不支持该操作，重试没有意义。
 	ErrNotSupported = errors.New("上游不支持该操作")
 	// ErrInvalidSignature 表示回调签名校验失败。
