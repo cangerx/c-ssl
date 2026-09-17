@@ -117,14 +117,6 @@ else
   fi
 fi
 
-hdr "上游凭证"
-
-if [ -n "$(envval FOXSSL_API_KEY)" ]; then
-  warn "FOXSSL_API_KEY 已配置，请确认不是生产凭证"
-else
-  ok "FOXSSL_API_KEY 未配置（本地走 mock，符合预期）"
-fi
-
 hdr "支付渠道"
 
 # PAYMENT_PROVIDER 缺省是 mock，所以空值不算错，只提示。
@@ -149,6 +141,43 @@ fi
 # 配上生产环境等于给所有人免费充值，服务端会拒绝启动，这里提前提醒。
 if [ "$(envval APP_ENV)" = "production" ] && [ "${PPROVIDER:-mock}" = "mock" ]; then
   bad "APP_ENV=production 却启用了 mock 支付渠道（服务端会拒绝启动）"
+fi
+
+hdr "证书上游（FoxSSL）"
+
+# 与支付渠道同样的判断顺序：先看标识，再看凭证。
+FPROVIDER="$(envval FOXSSL_PROVIDER)"
+case "$FPROVIDER" in
+  ""|mock) ok "FOXSSL_PROVIDER=${FPROVIDER:-mock}（本地模拟上游，不会真的签发证书）" ;;
+  *)       ok "FOXSSL_PROVIDER=$FPROVIDER" ;;
+esac
+
+# 这两项都是必填：适配层拒绝用空 API Key 构造，而空的 Webhook 密钥
+# 会让回调接口的验签形同虚设——那个接口不套登录鉴权，密钥是唯一的身份凭证。
+# 缺失时服务端起不来，所以判 bad。
+FAPIKEY="$(envval FOXSSL_API_KEY)"
+if [ -z "$FAPIKEY" ]; then
+  bad "FOXSSL_API_KEY 未配置（服务端启动会失败）"
+else
+  # 本地跑 mock 上游时，这个值只是「已配置」的标记，不会真的被发出去。
+  # 提醒一句是因为：把生产凭证填进本地 .env，一次误提交就是一次泄露。
+  warn "FOXSSL_API_KEY 已配置（${#FAPIKEY} 位），请确认不是生产凭证"
+fi
+
+FSECRET="$(envval FOXSSL_WEBHOOK_SECRET)"
+if [ -z "$FSECRET" ]; then
+  bad "FOXSSL_WEBHOOK_SECRET 未配置（服务端启动会失败）"
+elif [ "${#FSECRET}" -lt 32 ]; then
+  warn "FOXSSL_WEBHOOK_SECRET 仅 ${#FSECRET} 位，非开发环境要求 ≥ 32 位"
+else
+  ok "FOXSSL_WEBHOOK_SECRET 已配置（${#FSECRET} 位）"
+fi
+
+# Mock 上游比 Mock 支付渠道更隐蔽：它不会真的向 CA 下单，但订单会一路
+# 推进到「已签发」，用户被扣了钱、也拿到了「证书」，而那张证书在浏览器里
+# 不被信任。全程不报任何错，只会在客户站点上表现为证书警告。
+if [ "$(envval APP_ENV)" = "production" ] && [ "${FPROVIDER:-mock}" = "mock" ]; then
+  bad "APP_ENV=production 却启用了 mock 证书上游（服务端会拒绝启动）"
 fi
 
 printf '\n\033[1m结果：\033[0m %d 通过, %d 警告, %d 失败\n' "$PASS" "$WARN" "$FAIL"

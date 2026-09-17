@@ -41,6 +41,21 @@ type Config struct {
 	// 共用一个意味着轮换其中一个会同时打断另一个。
 	PaymentWebhookSecret string
 
+	// FoxSSLProvider 是证书上游标识。开发环境用 mock。
+	FoxSSLProvider string
+	// FoxSSLBaseURL 是上游接口地址。
+	FoxSSLBaseURL string
+	// FoxSSLAPIKey 是调用上游接口的凭证。
+	//
+	// 非空是硬要求：适配层拒绝用空 Key 构造，因为「忘记配置」静默变成
+	// 「用一个空 Key 调用」时，上游侧的错误信息通常与凭证无关，排查方向会跑偏。
+	FoxSSLAPIKey string
+	// FoxSSLWebhookSecret 是上游回调的验签密钥。
+	//
+	// 它是回调接口唯一的身份凭证——那个接口不套登录鉴权。密钥为空时
+	// 任何人都能算出 HMAC 并伪造事件，把订单推进到已签发。
+	FoxSSLWebhookSecret string
+
 	// TrustProxy 决定是否采信 X-Forwarded-For 等转发头来判定客户端 IP。
 	//
 	// 默认关闭：这些头是客户端可以随意伪造的，直接采信会让限流形同虚设。
@@ -59,6 +74,10 @@ type Config struct {
 // 让配置去依赖业务上游包会把依赖方向倒过来。
 // 两边取值不一致由 TestMockProviderNameMatches 兜住。
 const paymentProviderMock = "mock"
+
+// foxsslProviderMock 与 upstream/foxssl 的 NameMock 一致。
+// 同样的理由，同样由测试兜住（TestFoxSSLProviderNameMatches）。
+const foxsslProviderMock = "mock"
 
 // IsDevelopment 判断是否运行在开发环境。
 func (c *Config) IsDevelopment() bool {
@@ -100,6 +119,11 @@ func Load() (*Config, error) {
 		PaymentProvider:      getEnv("PAYMENT_PROVIDER", paymentProviderMock),
 		PaymentWebhookSecret: getEnv("PAYMENT_WEBHOOK_SECRET", ""),
 
+		FoxSSLProvider:      getEnv("FOXSSL_PROVIDER", foxsslProviderMock),
+		FoxSSLBaseURL:       getEnv("FOXSSL_BASE_URL", ""),
+		FoxSSLAPIKey:        getEnv("FOXSSL_API_KEY", ""),
+		FoxSSLWebhookSecret: getEnv("FOXSSL_WEBHOOK_SECRET", ""),
+
 		TrustProxy: getEnvBool("TRUST_PROXY", false),
 
 		LogLevel: getEnv("LOG_LEVEL", "info"),
@@ -137,6 +161,14 @@ func (c *Config) validate() error {
 	if c.PaymentWebhookSecret == "" {
 		missing = append(missing, "PAYMENT_WEBHOOK_SECRET")
 	}
+	// 上游的两项也是必填。缺 API Key 时适配层会拒绝构造，
+	// 但那时错误来自业务包、只提到一个键；在配置层一次列全更省事。
+	if c.FoxSSLAPIKey == "" {
+		missing = append(missing, "FOXSSL_API_KEY")
+	}
+	if c.FoxSSLWebhookSecret == "" {
+		missing = append(missing, "FOXSSL_WEBHOOK_SECRET")
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("缺少必需配置: %s（检查 .env 或进程环境变量）", strings.Join(missing, ", "))
 	}
@@ -155,12 +187,24 @@ func (c *Config) validate() error {
 		if len(c.PaymentWebhookSecret) < 32 {
 			return fmt.Errorf("非开发环境的 PAYMENT_WEBHOOK_SECRET 长度不足 32 位")
 		}
+		// 与支付回调同理：密钥短到能被暴力枚举时，验签只是一道装饰，
+		// 攻击者能自己算出合法签名，伪造事件把订单推进到已签发。
+		if len(c.FoxSSLWebhookSecret) < 32 {
+			return fmt.Errorf("非开发环境的 FOXSSL_WEBHOOK_SECRET 长度不足 32 位")
+		}
 	}
 
 	// Mock 渠道不会真的收钱：它生成的支付地址是本地页面，回调也由本服务自己发出。
 	// 在生产环境启用等于给所有用户免费充值，因此直接拒绝启动。
 	if c.IsProduction() && c.PaymentProvider == paymentProviderMock {
 		return fmt.Errorf("生产环境不能启用 %s 支付渠道，请配置真实的 PAYMENT_PROVIDER", paymentProviderMock)
+	}
+
+	// Mock 上游同理，而且后果更直接：它不会真的向 CA 下单，
+	// 用户付了钱、订单会一路推进到「已签发」，但那张证书在浏览器里是不被信任的。
+	// 这类故障不会报错，只会安静地毁掉每一个客户的站点。
+	if c.IsProduction() && c.FoxSSLProvider == foxsslProviderMock {
+		return fmt.Errorf("生产环境不能启用 %s 证书上游，请配置真实的 FOXSSL_PROVIDER", foxsslProviderMock)
 	}
 
 	return nil
@@ -177,6 +221,10 @@ func (c *Config) LogSummary() []any {
 		"jwt_secret", logger.Redact(c.JWTSecret),
 		"payment_provider", c.PaymentProvider,
 		"payment_webhook_secret", logger.Redact(c.PaymentWebhookSecret),
+		"foxssl_provider", c.FoxSSLProvider,
+		"foxssl_base_url", c.FoxSSLBaseURL,
+		"foxssl_api_key", logger.Redact(c.FoxSSLAPIKey),
+		"foxssl_webhook_secret", logger.Redact(c.FoxSSLWebhookSecret),
 		"log_level", c.LogLevel,
 		"env_file", c.EnvFile,
 	}
