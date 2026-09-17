@@ -114,6 +114,9 @@ paths:
   /orders/{orderNo}/certificate:
     $ref: './paths/orders.yaml#/downloadCertificate'
 
+  /orders/{orderNo}/mock/issue:
+    $ref: './paths/orders.yaml#/mockIssueOrder'
+
   /webhooks/foxssl:
     $ref: './paths/webhooks.yaml#/foxssl'
 

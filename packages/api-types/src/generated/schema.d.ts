@@ -573,6 +573,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders/{orderNo}/mock/issue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 推进模拟上游到已签发（仅开发环境）
+         * @description **仅在启用了模拟上游（`FOXSSL_PROVIDER=mock`）时注册，其他环境访问返回 404。**
+         *
+         *     真实 CA 不会因为一个 HTTP 请求就立刻签发证书，所以这个能力只存在于
+         *     模拟上游。它把**上游侧**的订单标记为已签发，**不改动本地订单**：
+         *     本地状态仍由上游回调（`POST /webhooks/foxssl`）驱动。
+         *
+         *     这是刻意的。如果这里顺手把本地订单也改成 `issued`，端到端冒烟就会
+         *     绕开回调路径——而回调（验签、幂等、乱序、资金释放）恰恰是最需要被
+         *     完整验证的一段。
+         *
+         *     典型用法：下单 → 从订单详情取 `upstreamOrderNo` → 调本接口 →
+         *     按上游报文格式签名并投递回调 → 订单变为 `issued`，证书可下载。
+         */
+        post: operations["mockIssueOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/foxssl": {
         parameters: {
             query?: never;
@@ -1117,13 +1148,28 @@ export interface components {
             /** @description 当前选定的验证方式。尚未选择时为 null */
             method?: components["schemas"]["DcvMethod"] | null;
             /**
-             * @description 本域名可用的验证方式，已按产品规则过滤：
+             * @description 本域名**当前允许提交**的验证方式。服务端已经算好，前端直接用本字段
+             *     渲染选项，不要自行过滤或推导——规则只存在于后端。
              *
-             *     - 域名含通配符时**不含**文件验证（通配符域名无法放置验证文件）
-             *     - GlobalSign、AlphaSSL 不含邮件验证
-             *     - Certum 只有 DNS 验证
+             *     它是两个来源的交集：
              *
-             *     前端必须直接用本字段渲染选项，不要自行过滤——规则只存在于后端。
+             *     - 上游实际准备好的验证材料：返回了 DNS 记录值就有 DNS 验证，
+             *       返回了文件路径就有文件验证，返回了收件地址就有邮件验证。
+             *     - 产品声明的能力：产品页写着 AlphaSSL 不支持邮件验证，这一项就**不会**
+             *       出现在这里，提交它也会被 400 拒掉。
+             *
+             *     两个来源缺一不可：只看材料会让用户选到产品并不支持的方式；
+             *     只看产品会让用户选到上游还没准备好材料的方式——两种都会在下单之后
+             *     才失败，而那时用户已经按错误的方式配好了记录。
+             *
+             *     产品下架后不再施加产品侧约束，退回到只按材料判断：用户已经付过钱、
+             *     上游也已备好材料，卡住验证只会让一张已付款的订单烂在那里。
+             *
+             *     含通配符的域名**恒不含**文件验证：上游有时也会为通配符域名返回
+             *     文件路径，但那个路径没有任何地方能访问到。
+             *
+             *     提交验证时选的 `method` 必须是本次提交的各域名本字段的交集——
+             *     即界面上每个被勾选的域名都列出了它，才提交得上去。
              */
             availableMethods: components["schemas"]["DcvMethod"][];
             /**
@@ -1508,6 +1554,17 @@ export interface components {
          * @enum {string}
          */
         KeyAlgorithm: "rsa" | "ecc";
+        MockIssueResponse: components["schemas"]["ApiEnvelope"] & {
+            data: {
+                /**
+                 * @description 被推进的上游订单号。
+                 *
+                 *     调用方需要它来构造回调报文：本接口只动上游，本地订单状态
+                 *     仍由回调驱动，因此下一步必须拿着它去投递一条已签发事件。
+                 */
+                upstreamOrderNo: string;
+            };
+        };
     };
     responses: {
         /** @description 参数校验失败（code 1000） */
@@ -2473,6 +2530,60 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             /** @description 订单尚未签发 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    mockIssueOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 上游已推进 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MockIssueResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /**
+             * @description 订单不存在、不属于当前用户，或本环境未启用模拟上游。
+             *
+             *     后两种情况与「订单不存在」返回完全相同的响应：接口未注册时由路由层
+             *     兜底，不泄露「这台服务器装了模拟上游」这件事。
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 订单尚未提交到上游，没有可推进的对象 */
             409: {
                 headers: {
                     [name: string]: unknown;

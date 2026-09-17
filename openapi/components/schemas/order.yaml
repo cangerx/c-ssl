@@ -273,3 +273,21 @@ OrderDetailResponse:
       properties:
         data:
           $ref: '#/CertificateOrder'
+
+MockIssueResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [upstreamOrderNo]
+          properties:
+            upstreamOrderNo:
+              type: string
+              description: |-
+                被推进的上游订单号。
+
+                调用方需要它来构造回调报文：本接口只动上游，本地订单状态
+                仍由回调驱动，因此下一步必须拿着它去投递一条已签发事件。

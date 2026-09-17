@@ -399,3 +399,51 @@ downloadCertificate:
               $ref: '../components/schemas/common.yaml#/ErrorResponse'
       '502':
         $ref: '../components/responses.yaml#/BadGateway'
+
+mockIssueOrder:
+  post:
+    tags: [orders]
+    summary: 推进模拟上游到已签发（仅开发环境）
+    description: |-
+      **仅在启用了模拟上游（`FOXSSL_PROVIDER=mock`）时注册，其他环境访问返回 404。**
+
+      真实 CA 不会因为一个 HTTP 请求就立刻签发证书，所以这个能力只存在于
+      模拟上游。它把**上游侧**的订单标记为已签发，**不改动本地订单**：
+      本地状态仍由上游回调（`POST /webhooks/foxssl`）驱动。
+
+      这是刻意的。如果这里顺手把本地订单也改成 `issued`，端到端冒烟就会
+      绕开回调路径——而回调（验签、幂等、乱序、资金释放）恰恰是最需要被
+      完整验证的一段。
+
+      典型用法：下单 → 从订单详情取 `upstreamOrderNo` → 调本接口 →
+      按上游报文格式签名并投递回调 → 订单变为 `issued`，证书可下载。
+    operationId: mockIssueOrder
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    responses:
+      '200':
+        description: 上游已推进
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/MockIssueResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        description: |-
+          订单不存在、不属于当前用户，或本环境未启用模拟上游。
+
+          后两种情况与「订单不存在」返回完全相同的响应：接口未注册时由路由层
+          兜底，不泄露「这台服务器装了模拟上游」这件事。
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '409':
+        description: 订单尚未提交到上游，没有可推进的对象
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
