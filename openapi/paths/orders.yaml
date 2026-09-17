@@ -1,0 +1,401 @@
+orders:
+  post:
+    tags: [orders]
+    summary: 创建证书订单
+    description: |-
+      校验产品规则与余额后创建订单，并向上游提交签发请求。
+
+      **资金动作**：下单会在同一事务内冻结订单金额（等于产品零售价）。
+      冻结不减少可用余额以外的任何东西——总资产不变，只是这笔钱在下单期间
+      不能被花掉。上游受理后冻结转为实扣；上游拒绝或本地提交失败则解冻退回。
+
+      金额取自产品价格表，与下单页展示的价格完全一致，不存在事后调整。
+
+      本接口是同步的：上游返回后才响应，因此耗时可能达到秒级。
+      上游不可用会返回 `502`（业务码 3000），此时余额已解冻，可直接重试。
+    operationId: createOrder
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/order.yaml#/CreateOrderRequest'
+    responses:
+      '200':
+        description: 创建成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/CreateOrderResponse'
+      '400':
+        description: |-
+          参数校验失败（业务码 1000），或余额不足（业务码 2000）。
+
+          产品规则不满足时也走本响应，字段级原因在 `data.fields` 里，
+          例如 `domains: 该产品不支持通配符域名`。
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        description: 产品不存在或已下架
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+  get:
+    tags: [orders]
+    summary: 查询证书订单
+    description: |-
+      按订单 ID 倒序分页返回当前用户的证书订单，最新的在最前。
+
+      **翻页请使用响应中的 `nextCursor`。** 为 `null` 即表示已到末页。
+      用 offset 翻页会漏记录：订单持续新增时，后面的页会跳过中间插入的行。
+    operationId: listOrders
+    parameters:
+      - name: cursor
+        in: query
+        required: false
+        description: 分页游标，取上一页响应的 `nextCursor`。省略表示从最新一条开始。
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        description: 每页条数，默认 20，最大 100。超过 100 会截断为 100 而不是报错。
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: status
+        in: query
+        required: false
+        description: 按状态筛选，省略表示不筛选
+        schema:
+          $ref: '../components/schemas/order.yaml#/OrderStatus'
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/OrderListResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+
+orderDetail:
+  get:
+    tags: [orders]
+    summary: 查询订单详情
+    description: |-
+      返回订单完整信息，含联系人、企业信息与上游订单号。
+
+      访问他人订单返回 `404` 而不是 `403`：后者等于确认「这个订单号存在」，
+      可以拿来做订单号枚举。
+    operationId: getOrder
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/OrderDetailResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+
+cancelOrder:
+  post:
+    tags: [orders]
+    summary: 取消订单
+    description: |-
+      取消订单并解冻相应金额。
+
+      **顺序是刻意的**：先向上游发起取消，上游确认后才解冻。
+      反过来做的话，上游仍在跑而钱已经退给用户，等于平台白送一张证书。
+
+      上游取消失败时订单保持原状、余额不解冻，并返回 `502`——
+      让用户重试，而不是让平台承担不确定性。
+
+      只有 `cancelSupported` 为 true 的产品可取消；免费证书恒不支持。
+      已签发（`issued`）的订单不能取消，只能走重签或退款流程。
+    operationId: cancelOrder
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              reason:
+                type: string
+                maxLength: 255
+                nullable: true
+                description: 取消原因，便于客服追溯
+    responses:
+      '200':
+        description: 取消成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/OrderDetailResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单当前状态或产品能力不允许取消
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+reissueOrder:
+  post:
+    tags: [orders]
+    summary: 重签证书
+    description: |-
+      向上游申请重签。重签**不额外扣费**：CA 允许在证书有效期内免费重签，
+      平台把这次重签算在原订单的结算里。
+
+      重签不改变原订单状态——`issued` 是终态。重签成功后会更新订单上的
+      上游重签状态与新的证书信息，原证书在宽限期内继续可用。
+
+      只有 `reissueSupported` 为 true 的产品可重签；免费证书恒不支持。
+      订单必须处于 `issued` 状态。
+    operationId: reissueOrder
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              reason:
+                type: string
+                maxLength: 255
+                nullable: true
+                description: 重签原因
+    responses:
+      '200':
+        description: 重签请求已提交
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/order.yaml#/OrderDetailResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单状态或产品能力不允许重签
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+orderDomains:
+  get:
+    tags: [orders]
+    summary: 查询域名验证信息
+    description: |-
+      返回订单包含的全部域名及其验证材料。
+
+      DNS 记录值、文件路径、可用邮件地址都是**可直接照抄的最终值**。
+      上游返回的路径模板含 `{FQDN}` 占位符，平台已逐个域名替换完毕。
+    operationId: listOrderDomains
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/dcv.yaml#/DomainListResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+
+verifyDomains:
+  post:
+    tags: [orders]
+    summary: 提交域名验证
+    description: |-
+      通知上游去实际检查这些域名的验证材料。
+
+      **提交前请确认记录已经生效。** DNS 解析有缓存，刚加的记录可能需要
+      几分钟才可见；过早提交会消耗验证机会，连续失败可能让域名进入
+      失败状态，需要人工介入。
+
+      邮件验证的语义不同：它只负责发信，验证由收件人点击链接完成。
+    operationId: verifyOrderDomains
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/dcv.yaml#/VerifyDomainsRequest'
+    responses:
+      '200':
+        description: 已提交验证
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/dcv.yaml#/DomainListResponse'
+      '400':
+        description: 域名不属于本订单，或验证方式不在可用集合内
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单当前状态不允许提交验证（只有 waiting_dcv 允许）
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+resendDcvEmail:
+  post:
+    tags: [orders]
+    summary: 重发验证邮件
+    description: |-
+      重新发送域名验证邮件。仅对邮件验证方式有效。
+
+      上游通常限制重发频率（同一域名一分钟内只能发一次），
+      超频会返回 `502`，等一会儿重试即可。
+    operationId: resendDcvEmail
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/dcv.yaml#/ResendEmailRequest'
+    responses:
+      '200':
+        description: 已重发
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/dcv.yaml#/DomainListResponse'
+      '400':
+        $ref: '../components/responses.yaml#/BadRequest'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单当前状态不允许该操作，或域名未使用邮件验证
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+regenerateDcvToken:
+  post:
+    tags: [orders]
+    summary: 重新生成验证 token
+    description: |-
+      为订单内的域名重新生成验证 token，并返回更新后的验证材料。
+
+      **旧 token 立即失效。** 如果之前已经把 DNS 记录配好了，
+      必须用新值覆盖，否则验证会失败。这个接口是为「token 泄漏」或
+      「域名所有权变更」准备的，正常情况下不需要调用。
+
+      平台对同一订单的重生成次数有限制，频繁调用会被拒绝。
+    operationId: regenerateDcvToken
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    responses:
+      '200':
+        description: 重新生成成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/dcv.yaml#/RegenerateTokenResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单当前状态不允许该操作
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'
+
+downloadCertificate:
+  get:
+    tags: [orders]
+    summary: 下载证书
+    description: |-
+      返回已签发证书的 PEM 文本。
+
+      **平台不保存私钥。** 请用下单时生成 CSR 的那台机器上的私钥与本证书配对，
+      平台无法帮你恢复私钥。
+
+      订单未到 `issued` 状态时返回 `409`，因为此时证书还不存在。
+    operationId: downloadCertificate
+    parameters:
+      - $ref: '../components/parameters.yaml#/OrderNo'
+    responses:
+      '200':
+        description: 获取成功
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/certificate.yaml#/CertificateResponse'
+      '401':
+        $ref: '../components/responses.yaml#/Unauthorized'
+      '404':
+        $ref: '../components/responses.yaml#/NotFound'
+      '409':
+        description: 订单尚未签发
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '502':
+        $ref: '../components/responses.yaml#/BadGateway'

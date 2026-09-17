@@ -1,0 +1,167 @@
+DomainStatus:
+  type: string
+  description: |
+    单个域名的验证状态。
+
+    - `pending` 尚未提交验证，或上游还没开始查
+    - `verifying` 已提交，等待上游校验
+    - `verified` 已验证通过
+    - `failed` 验证失败，通常是记录没生效或放错位置
+    - `expired` 验证已过期。上游对已验证域名有保留期（通常 30 天），
+      超过后需要重新验证才能继续签发
+  enum:
+    - pending
+    - verifying
+    - verified
+    - failed
+    - expired
+
+DcvMethod:
+  $ref: './product.yaml#/DcvMethod'
+
+OrderDomain:
+  type: object
+  description: |
+    订单中的一个域名及其验证材料。
+
+    **DNS 记录值与文件路径都是按域名计算好的最终值，可直接照抄。**
+    上游返回的路径模板里含 `{FQDN}` 占位符，平台已逐个域名替换；
+    未经替换的模板不会出现在本接口的任何字段里。
+  required: [domain, status, availableMethods]
+  properties:
+    domain:
+      type: string
+      example: example.com
+    status:
+      $ref: '#/DomainStatus'
+    method:
+      allOf:
+        - $ref: '#/DcvMethod'
+      nullable: true
+      description: 当前选定的验证方式。尚未选择时为 null
+    availableMethods:
+      type: array
+      description: |
+        本域名可用的验证方式，已按产品规则过滤：
+
+        - 域名含通配符时**不含**文件验证（通配符域名无法放置验证文件）
+        - GlobalSign、AlphaSSL 不含邮件验证
+        - Certum 只有 DNS 验证
+
+        前端必须直接用本字段渲染选项，不要自行过滤——规则只存在于后端。
+      items:
+        $ref: '#/DcvMethod'
+    dnsRecordType:
+      type: string
+      nullable: true
+      enum: [TXT, CNAME, null]
+      description: DNS 记录类型，仅 DNS 验证方式有值
+    dnsRecordName:
+      type: string
+      nullable: true
+      description: |
+        DNS 记录的主机名。注意它**不是**裸域名，前缀由上游指定，
+        原样照抄即可。
+      example: _dnsauth.example.com
+    dnsRecordValue:
+      type: string
+      nullable: true
+      description: DNS 记录值，原样照抄
+    filePath:
+      type: string
+      nullable: true
+      description: |
+        文件验证的访问路径，`{FQDN}` 已替换为本域名。
+        需要把 `fileContent` 的内容放到 `https://<域名><filePath>` 上。
+      example: /.well-known/pki-validation/1A2B3C4D.txt
+    fileContent:
+      type: string
+      nullable: true
+      description: 文件验证需要放置的内容，原样照抄
+    emailAddresses:
+      type: array
+      nullable: true
+      description: 邮件验证可用的收件地址，仅邮件验证方式有值
+      items:
+        type: string
+        format: email
+    verifiedAt:
+      type: string
+      format: date-time
+      nullable: true
+      description: 验证通过时间
+    expiresAt:
+      type: string
+      format: date-time
+      nullable: true
+      description: 验证失效时间，过期后需重新验证
+
+DomainListResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/OrderDomain'
+
+VerifyDomainsRequest:
+  type: object
+  description: |
+    提交域名验证。语义按验证方式区分：
+
+    - DNS 与文件验证：通知上游去实际检查记录是否已生效。记录没配好就提交，
+      会消耗一次验证机会并可能让域名进入失败状态。
+    - 邮件验证：向 `emailAddresses` 中的地址发送验证邮件，由收件人点击链接完成。
+  required: [domains, method]
+  properties:
+    domains:
+      type: array
+      minItems: 1
+      maxItems: 100
+      description: 要提交验证的域名，必须是本订单包含的域名
+      items:
+        type: string
+    method:
+      allOf:
+        - $ref: '#/DcvMethod'
+      description: 验证方式，必须是这些域名 `availableMethods` 的交集
+      example: dns_txt
+
+ResendEmailRequest:
+  type: object
+  description: 重发验证邮件。仅对邮件验证方式有效
+  required: [domains]
+  properties:
+    domains:
+      type: array
+      minItems: 1
+      maxItems: 100
+      items:
+        type: string
+
+RegenerateTokenResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          description: |
+            重新生成后返回全部域名的最新验证材料。
+
+            **旧 token 立即失效。** 已经配置好的 DNS 记录需要同步更新，
+            否则验证会失败。
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/OrderDomain'

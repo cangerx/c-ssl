@@ -1,0 +1,67 @@
+foxssl:
+  post:
+    tags: [webhooks]
+    summary: 接收 FoxSSL 事件回调
+    description: |-
+      上游在订单状态、域名验证状态、证书签发等事件发生时回调本接口。
+
+      **本接口不套鉴权中间件**，调用方是 FoxSSL 服务器而不是登录用户，
+      身份由 `X-Webhook-Signature` 头承载。验签算法：以原始请求 body 字节
+      为输入计算 HMAC-SHA256，取 Base64。
+
+      几个必须遵守的约定：
+
+      - 应答体是 `{"status":"success"}`，**不套统一响应包装**。
+        上游只认它自己文档里写的格式，包一层 `code`/`message` 会被判成失败
+        并触发重推。同理，HTTP 状态码必须是 `200`。
+      - 必须在 8 秒内应答。因此本接口只做验签、落库和投递任务，
+        不在请求内下载证书或做复杂业务——那些交给 Worker。
+      - 幂等键是 `orderNo + status + payloadHash` 的组合。
+        上游会重推，同一条事件重复到达必须只生效一次。
+
+      **验签失败返回 `401`，且不写入任何数据。** 不落库是刻意的：
+      若把未验签的事件存下来，攻击者可以用伪造报文占满事件表，
+      把真实事件挤出幂等窗口。
+    operationId: handleFoxsslWebhook
+    security: []
+    parameters:
+      - name: X-Webhook-Signature
+        in: header
+        required: true
+        description: HMAC-SHA256 签名的 Base64 编码
+        schema:
+          type: string
+      - name: X-Webhook-Timestamp
+        in: header
+        required: false
+        description: |
+          事件产生时间（Unix 秒）。用于排查乱序投递——
+          上游不保证投递顺序，旧事件可能晚于新事件到达。
+        schema:
+          type: string
+    requestBody:
+      required: true
+      description: 上游事件的原始 JSON。验签基于原始字节，因此服务端不得在验签前解析或重新编码它。
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas/webhook.yaml#/FoxsslWebhookPayload'
+    responses:
+      '200':
+        description: 已受理
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/webhook.yaml#/WebhookAck'
+      '400':
+        description: 报文无法解析
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'
+      '401':
+        description: 验签失败
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/common.yaml#/ErrorResponse'

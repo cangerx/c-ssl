@@ -1,0 +1,90 @@
+Certificate:
+  type: object
+  description: |
+    已签发的证书。
+
+    **平台不保存私钥。** 下单时提交的 CSR 对应的私钥始终留在生成它的地方
+    （推荐由客户端生成）。因此本接口只返回证书链，用户需要自己把证书与
+    本地私钥配对使用。若下单时未提交 CSR，私钥在平台侧生成并持有，
+    此时证书的安全价值会显著降低。
+  required: [orderNo, certId, status, commonName, domains, certificate]
+  properties:
+    orderNo:
+      type: string
+      description: 平台订单号
+    certId:
+      type: string
+      description: 上游证书编号，与订单详情里的 `certId` 一致
+      example: CERT-2026-000123
+    status:
+      type: string
+      description: |
+        上游返回的证书状态原文。取值由上游定义，平台不做翻译，
+        因此这里没有 enum——把它映射成平台状态的是订单的 `status` 字段。
+      example: issued
+    commonName:
+      type: string
+      description: 证书主域名（CN）
+      example: example.com
+    domains:
+      type: array
+      description: 证书覆盖的全部域名，含 SAN
+      items:
+        type: string
+    keyAlgorithm:
+      type: string
+      enum: [rsa, ecc]
+    serialNumber:
+      type: string
+      nullable: true
+      description: 证书序列号
+    issuedAt:
+      type: string
+      format: date-time
+      nullable: true
+    expiresAt:
+      type: string
+      format: date-time
+      nullable: true
+    certificate:
+      type: string
+      description: |
+        服务器证书（PEM 文本），含域名与中间证书。
+
+        接口返回 JSON 而不是直接给文件流，是为了让错误也能走统一响应格式：
+        文件流一旦开始输出就无法中途改成 `{"code":5000}`，客户端只能拿到
+        一个内容损坏的下载。前端拿到本字段后自行另存为 `.pem` 即可。
+    caBundle:
+      type: string
+      nullable: true
+      description: CA 根证书链（PEM 文本）。上游未单独提供时为 null
+
+CertificateResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/Certificate'
+
+CertificateStatusResponse:
+  allOf:
+    - $ref: './common.yaml#/ApiEnvelope'
+    - type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [orderNo, status, certId]
+          properties:
+            orderNo:
+              type: string
+            status:
+              $ref: './order.yaml#/OrderStatus'
+            certId:
+              type: string
+              nullable: true
+            failureReason:
+              type: string
+              nullable: true

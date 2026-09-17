@@ -335,6 +335,282 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询证书订单
+         * @description 按订单 ID 倒序分页返回当前用户的证书订单，最新的在最前。
+         *
+         *     **翻页请使用响应中的 `nextCursor`。** 为 `null` 即表示已到末页。
+         *     用 offset 翻页会漏记录：订单持续新增时，后面的页会跳过中间插入的行。
+         */
+        get: operations["listOrders"];
+        put?: never;
+        /**
+         * 创建证书订单
+         * @description 校验产品规则与余额后创建订单，并向上游提交签发请求。
+         *
+         *     **资金动作**：下单会在同一事务内冻结订单金额（等于产品零售价）。
+         *     冻结不减少可用余额以外的任何东西——总资产不变，只是这笔钱在下单期间
+         *     不能被花掉。上游受理后冻结转为实扣；上游拒绝或本地提交失败则解冻退回。
+         *
+         *     金额取自产品价格表，与下单页展示的价格完全一致，不存在事后调整。
+         *
+         *     本接口是同步的：上游返回后才响应，因此耗时可能达到秒级。
+         *     上游不可用会返回 `502`（业务码 3000），此时余额已解冻，可直接重试。
+         */
+        post: operations["createOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询订单详情
+         * @description 返回订单完整信息，含联系人、企业信息与上游订单号。
+         *
+         *     访问他人订单返回 `404` 而不是 `403`：后者等于确认「这个订单号存在」，
+         *     可以拿来做订单号枚举。
+         */
+        get: operations["getOrder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消订单
+         * @description 取消订单并解冻相应金额。
+         *
+         *     **顺序是刻意的**：先向上游发起取消，上游确认后才解冻。
+         *     反过来做的话，上游仍在跑而钱已经退给用户，等于平台白送一张证书。
+         *
+         *     上游取消失败时订单保持原状、余额不解冻，并返回 `502`——
+         *     让用户重试，而不是让平台承担不确定性。
+         *
+         *     只有 `cancelSupported` 为 true 的产品可取消；免费证书恒不支持。
+         *     已签发（`issued`）的订单不能取消，只能走重签或退款流程。
+         */
+        post: operations["cancelOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/reissue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重签证书
+         * @description 向上游申请重签。重签**不额外扣费**：CA 允许在证书有效期内免费重签，
+         *     平台把这次重签算在原订单的结算里。
+         *
+         *     重签不改变原订单状态——`issued` 是终态。重签成功后会更新订单上的
+         *     上游重签状态与新的证书信息，原证书在宽限期内继续可用。
+         *
+         *     只有 `reissueSupported` 为 true 的产品可重签；免费证书恒不支持。
+         *     订单必须处于 `issued` 状态。
+         */
+        post: operations["reissueOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询域名验证信息
+         * @description 返回订单包含的全部域名及其验证材料。
+         *
+         *     DNS 记录值、文件路径、可用邮件地址都是**可直接照抄的最终值**。
+         *     上游返回的路径模板含 `{FQDN}` 占位符，平台已逐个域名替换完毕。
+         */
+        get: operations["listOrderDomains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/domains/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 提交域名验证
+         * @description 通知上游去实际检查这些域名的验证材料。
+         *
+         *     **提交前请确认记录已经生效。** DNS 解析有缓存，刚加的记录可能需要
+         *     几分钟才可见；过早提交会消耗验证机会，连续失败可能让域名进入
+         *     失败状态，需要人工介入。
+         *
+         *     邮件验证的语义不同：它只负责发信，验证由收件人点击链接完成。
+         */
+        post: operations["verifyOrderDomains"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/domains/resend-email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重发验证邮件
+         * @description 重新发送域名验证邮件。仅对邮件验证方式有效。
+         *
+         *     上游通常限制重发频率（同一域名一分钟内只能发一次），
+         *     超频会返回 `502`，等一会儿重试即可。
+         */
+        post: operations["resendDcvEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/domains/regenerate-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重新生成验证 token
+         * @description 为订单内的域名重新生成验证 token，并返回更新后的验证材料。
+         *
+         *     **旧 token 立即失效。** 如果之前已经把 DNS 记录配好了，
+         *     必须用新值覆盖，否则验证会失败。这个接口是为「token 泄漏」或
+         *     「域名所有权变更」准备的，正常情况下不需要调用。
+         *
+         *     平台对同一订单的重生成次数有限制，频繁调用会被拒绝。
+         */
+        post: operations["regenerateDcvToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{orderNo}/certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载证书
+         * @description 返回已签发证书的 PEM 文本。
+         *
+         *     **平台不保存私钥。** 请用下单时生成 CSR 的那台机器上的私钥与本证书配对，
+         *     平台无法帮你恢复私钥。
+         *
+         *     订单未到 `issued` 状态时返回 `409`，因为此时证书还不存在。
+         */
+        get: operations["downloadCertificate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/foxssl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 接收 FoxSSL 事件回调
+         * @description 上游在订单状态、域名验证状态、证书签发等事件发生时回调本接口。
+         *
+         *     **本接口不套鉴权中间件**，调用方是 FoxSSL 服务器而不是登录用户，
+         *     身份由 `X-Webhook-Signature` 头承载。验签算法：以原始请求 body 字节
+         *     为输入计算 HMAC-SHA256，取 Base64。
+         *
+         *     几个必须遵守的约定：
+         *
+         *     - 应答体是 `{"status":"success"}`，**不套统一响应包装**。
+         *       上游只认它自己文档里写的格式，包一层 `code`/`message` 会被判成失败
+         *       并触发重推。同理，HTTP 状态码必须是 `200`。
+         *     - 必须在 8 秒内应答。因此本接口只做验签、落库和投递任务，
+         *       不在请求内下载证书或做复杂业务——那些交给 Worker。
+         *     - 幂等键是 `orderNo + status + payloadHash` 的组合。
+         *       上游会重推，同一条事件重复到达必须只生效一次。
+         *
+         *     **验签失败返回 `401`，且不写入任何数据。** 不落库是刻意的：
+         *     若把未验签的事件存下来，攻击者可以用伪造报文占满事件表，
+         *     把真实事件挤出幂等窗口。
+         */
+        post: operations["handleFoxsslWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -630,6 +906,407 @@ export interface components {
         };
         ProductDetailResponse: components["schemas"]["ApiEnvelope"] & {
             data: components["schemas"]["Product"];
+        };
+        /**
+         * @description 证书订单状态。正常路径：
+         *
+         *     ```text
+         *     pending_payment → submitting → waiting_dcv → issuing → issued
+         *     ```
+         *
+         *     几条不显然的约束：
+         *
+         *     - `issued`、`cancelled`、`failed` 是终态，不可回退。重签产生新的订单记录，
+         *       而不是把已签发的订单改回去。
+         *     - 不存在 `pending_payment → issued` 这种跨越：签发必须经过域名验证，
+         *       否则等于绕过 DCV 给任意域名发证。
+         *     - `paid` 是给「先下单、后支付」模式预留的状态。当前流程是钱包即时扣款，
+         *       冻结即代表用户已承诺付款，因此不经过 `paid`。
+         * @enum {string}
+         */
+        OrderStatus: "pending_payment" | "paid" | "submitting" | "waiting_dcv" | "issuing" | "issued" | "cancelled" | "failed";
+        /** @description 证书联系人。CA 在 OV/EV 审核时会联系此人，请填真实可触达的信息。 */
+        OrderContact: {
+            /** @example 张三 */
+            name: string;
+            /**
+             * Format: email
+             * @example admin@example.com
+             */
+            email: string;
+            /**
+             * @description 含国家码，例如 +86.13800138000
+             * @example 86.13800138
+             */
+            phone: string;
+            /** @description 职位，OV/EV 建议填写 */
+            title?: string | null;
+        };
+        /**
+         * @description 企业主体信息。`requireOrganizationInfo` 为 true 的产品（OV、EV）必须提交，
+         *     且各字段会由 CA 人工核验，填错会导致审核驳回。
+         */
+        OrderOrganization: {
+            /**
+             * @description 企业注册全称，须与营业执照完全一致
+             * @example 某某科技有限公司
+             */
+            name: string;
+            /**
+             * @description 统一社会信用代码或当地等效的注册号
+             * @example 91310000MA1K35XXXX
+             */
+            registrationNo: string;
+            /**
+             * @description ISO 3166-1 两位国家代码
+             * @example CN
+             */
+            country: string;
+            /** @example 上海市 */
+            province: string;
+            /** @example 上海市 */
+            city: string;
+            /** @example 浦东新区某某路 1 号 */
+            address: string;
+            /** @example 200120 */
+            postalCode: string;
+            /** @example 86.0215 */
+            phone: string;
+        };
+        CreateOrderRequest: {
+            /**
+             * Format: int64
+             * @description 产品 ID，取自 `GET /products`
+             * @example 1
+             */
+            productId: number;
+            /**
+             * @description 购买年限，必须落在产品的 `years` 内
+             * @example 1
+             */
+            years: number;
+            /**
+             * @description 密钥算法，必须落在产品的 `keyAlgorithms` 内
+             * @enum {string}
+             */
+            keyAlgorithm: "rsa" | "ecc";
+            /**
+             * @description 要签发的域名，第一个是主域名（CN），其余作为 SAN。
+             *
+             *     通配符写 `*.example.com`。是否允许通配符、允许多少个域名，
+             *     由产品能力决定，越界会在下单时被拒绝。
+             * @example [
+             *       "example.com",
+             *       "www.example.com"
+             *     ]
+             */
+            domains: string[];
+            /**
+             * @description 证书签名请求（PEM 文本），可省略。
+             *
+             *     **强烈建议由客户端生成。** 生成 CSR 的同时会产生私钥，私钥一旦上传到平台
+             *     就等于把证书的控制权交给了平台——平台被入侵、或运维人员误操作，
+             *     都能用这把私钥解密流量。客户端生成则私钥始终不出本地。
+             *
+             *     省略时平台代为生成，此时平台持有私钥，会显著降低证书的安全价值，
+             *     仅在对接自动化流程时才应这样做。
+             */
+            csr?: string | null;
+            contact: components["schemas"]["OrderContact"];
+            /** @description 企业信息。`requireOrganizationInfo` 为 true 时必须提交 */
+            organization?: components["schemas"]["OrderOrganization"] | null;
+        };
+        /**
+         * @description 订单列表项。刻意不含联系人、企业信息与 CSR——列表页用不到，
+         *     且这些字段含个人信息，无谓地扩大暴露面。
+         */
+        CertificateOrderSummary: {
+            /**
+             * @description 平台订单号，形如 CS20260917120000A7K3M9
+             * @example CS20260917120000A7K3M9
+             */
+            orderNo: string;
+            /** Format: int64 */
+            productId: number;
+            /** @example DigiCert Secure Site OV */
+            productName: string;
+            /** @example DigiCert */
+            brand: string;
+            /** @enum {string} */
+            validationType: "dv" | "ov" | "ev";
+            /** @example 1 */
+            years: number;
+            /** @enum {string} */
+            keyAlgorithm: "rsa" | "ecc";
+            /** @description 订单包含的域名，第一个是主域名 */
+            domains: string[];
+            /**
+             * Format: int64
+             * @description 订单金额（分）。等于下单时冻结、随后实扣的金额
+             * @example 29800
+             */
+            amount: number;
+            status: components["schemas"]["OrderStatus"];
+            /** @description 上游证书编号，签发后才有 */
+            certId?: string | null;
+            /** @description 失败原因，仅 `failed` 状态有值 */
+            failureReason?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        CertificateOrder: components["schemas"]["CertificateOrderSummary"] & {
+            /**
+             * @description FoxSSL 订单号。客服排查与对账时需要，因此对用户可见。
+             *
+             *     注意上游还有一组原始状态字段（上游订单状态、证书状态、准备状态、
+             *     重签状态），它们只出现在运营后台：这些取值的含义随上游版本变化，
+             *     直接暴露给用户会引起误判。
+             */
+            upstreamOrderNo?: string | null;
+            contact?: components["schemas"]["OrderContact"];
+            organization?: components["schemas"]["OrderOrganization"] | null;
+            /** Format: date-time */
+            issuedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description 证书到期时间，签发后才有
+             */
+            expiresAt?: string | null;
+        };
+        CreateOrderResponse: components["schemas"]["ApiEnvelope"] & {
+            data: components["schemas"]["CertificateOrder"];
+        };
+        OrderListResponse: components["schemas"]["ApiEnvelope"] & {
+            data: {
+                items: components["schemas"]["CertificateOrderSummary"][];
+                /**
+                 * Format: int64
+                 * @description 下一页游标，为 null 表示已到末页
+                 */
+                nextCursor?: number | null;
+            };
+        };
+        OrderDetailResponse: components["schemas"]["ApiEnvelope"] & {
+            data: components["schemas"]["CertificateOrder"];
+        };
+        /**
+         * @description 单个域名的验证状态。
+         *
+         *     - `pending` 尚未提交验证，或上游还没开始查
+         *     - `verifying` 已提交，等待上游校验
+         *     - `verified` 已验证通过
+         *     - `failed` 验证失败，通常是记录没生效或放错位置
+         *     - `expired` 验证已过期。上游对已验证域名有保留期（通常 30 天），
+         *       超过后需要重新验证才能继续签发
+         * @enum {string}
+         */
+        DomainStatus: "pending" | "verifying" | "verified" | "failed" | "expired";
+        /**
+         * @description 订单中的一个域名及其验证材料。
+         *
+         *     **DNS 记录值与文件路径都是按域名计算好的最终值，可直接照抄。**
+         *     上游返回的路径模板里含 `{FQDN}` 占位符，平台已逐个域名替换；
+         *     未经替换的模板不会出现在本接口的任何字段里。
+         */
+        OrderDomain: {
+            /** @example example.com */
+            domain: string;
+            status: components["schemas"]["DomainStatus"];
+            /** @description 当前选定的验证方式。尚未选择时为 null */
+            method?: components["schemas"]["DcvMethod"] | null;
+            /**
+             * @description 本域名可用的验证方式，已按产品规则过滤：
+             *
+             *     - 域名含通配符时**不含**文件验证（通配符域名无法放置验证文件）
+             *     - GlobalSign、AlphaSSL 不含邮件验证
+             *     - Certum 只有 DNS 验证
+             *
+             *     前端必须直接用本字段渲染选项，不要自行过滤——规则只存在于后端。
+             */
+            availableMethods: components["schemas"]["DcvMethod"][];
+            /**
+             * @description DNS 记录类型，仅 DNS 验证方式有值
+             * @enum {string|null}
+             */
+            dnsRecordType?: "TXT" | "CNAME" | null;
+            /**
+             * @description DNS 记录的主机名。注意它**不是**裸域名，前缀由上游指定，
+             *     原样照抄即可。
+             * @example _dnsauth.example.com
+             */
+            dnsRecordName?: string | null;
+            /** @description DNS 记录值，原样照抄 */
+            dnsRecordValue?: string | null;
+            /**
+             * @description 文件验证的访问路径，`{FQDN}` 已替换为本域名。
+             *     需要把 `fileContent` 的内容放到 `https://<域名><filePath>` 上。
+             * @example /.well-known/pki-validation/1A2B3C4D.txt
+             */
+            filePath?: string | null;
+            /** @description 文件验证需要放置的内容，原样照抄 */
+            fileContent?: string | null;
+            /** @description 邮件验证可用的收件地址，仅邮件验证方式有值 */
+            emailAddresses?: string[] | null;
+            /**
+             * Format: date-time
+             * @description 验证通过时间
+             */
+            verifiedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description 验证失效时间，过期后需重新验证
+             */
+            expiresAt?: string | null;
+        };
+        DomainListResponse: components["schemas"]["ApiEnvelope"] & {
+            data: {
+                items: components["schemas"]["OrderDomain"][];
+            };
+        };
+        /**
+         * @description 提交域名验证。语义按验证方式区分：
+         *
+         *     - DNS 与文件验证：通知上游去实际检查记录是否已生效。记录没配好就提交，
+         *       会消耗一次验证机会并可能让域名进入失败状态。
+         *     - 邮件验证：向 `emailAddresses` 中的地址发送验证邮件，由收件人点击链接完成。
+         */
+        VerifyDomainsRequest: {
+            /** @description 要提交验证的域名，必须是本订单包含的域名 */
+            domains: string[];
+            /**
+             * @description 验证方式，必须是这些域名 `availableMethods` 的交集
+             * @example dns_txt
+             */
+            method: components["schemas"]["DcvMethod"];
+        };
+        /** @description 重发验证邮件。仅对邮件验证方式有效 */
+        ResendEmailRequest: {
+            domains: string[];
+        };
+        RegenerateTokenResponse: components["schemas"]["ApiEnvelope"] & {
+            /**
+             * @description 重新生成后返回全部域名的最新验证材料。
+             *
+             *     **旧 token 立即失效。** 已经配置好的 DNS 记录需要同步更新，
+             *     否则验证会失败。
+             */
+            data: {
+                items: components["schemas"]["OrderDomain"][];
+            };
+        };
+        /**
+         * @description 已签发的证书。
+         *
+         *     **平台不保存私钥。** 下单时提交的 CSR 对应的私钥始终留在生成它的地方
+         *     （推荐由客户端生成）。因此本接口只返回证书链，用户需要自己把证书与
+         *     本地私钥配对使用。若下单时未提交 CSR，私钥在平台侧生成并持有，
+         *     此时证书的安全价值会显著降低。
+         */
+        Certificate: {
+            /** @description 平台订单号 */
+            orderNo: string;
+            /**
+             * @description 上游证书编号，与订单详情里的 `certId` 一致
+             * @example CERT-2026-000123
+             */
+            certId: string;
+            /**
+             * @description 上游返回的证书状态原文。取值由上游定义，平台不做翻译，
+             *     因此这里没有 enum——把它映射成平台状态的是订单的 `status` 字段。
+             * @example issued
+             */
+            status: string;
+            /**
+             * @description 证书主域名（CN）
+             * @example example.com
+             */
+            commonName: string;
+            /** @description 证书覆盖的全部域名，含 SAN */
+            domains: string[];
+            /** @enum {string} */
+            keyAlgorithm?: "rsa" | "ecc";
+            /** @description 证书序列号 */
+            serialNumber?: string | null;
+            /** Format: date-time */
+            issuedAt?: string | null;
+            /** Format: date-time */
+            expiresAt?: string | null;
+            /**
+             * @description 服务器证书（PEM 文本），含域名与中间证书。
+             *
+             *     接口返回 JSON 而不是直接给文件流，是为了让错误也能走统一响应格式：
+             *     文件流一旦开始输出就无法中途改成 `{"code":5000}`，客户端只能拿到
+             *     一个内容损坏的下载。前端拿到本字段后自行另存为 `.pem` 即可。
+             */
+            certificate: string;
+            /** @description CA 根证书链（PEM 文本）。上游未单独提供时为 null */
+            caBundle?: string | null;
+        };
+        CertificateResponse: components["schemas"]["ApiEnvelope"] & {
+            data: components["schemas"]["Certificate"];
+        };
+        /**
+         * @description 上游事件报文。字段与上游文档一一对应，平台不做重命名——
+         *     改名会让「对不上上游文档」成为常态，排障时要在两份字段名之间来回翻译。
+         *
+         *     平台自己的字段（本地订单号等）由平台根据 `orderNo` 反查，报文里没有。
+         */
+        FoxsslWebhookPayload: {
+            /**
+             * @description 事件类型。取值由上游定义，平台按事件类型决定要刷新哪些数据。
+             *
+             *     - `order_status` 订单状态变化
+             *     - `dcv_status` 域名验证状态变化
+             *     - `certificate_issued` 证书已签发，可以下载了
+             * @example certificate_issued
+             */
+            event: string;
+            /**
+             * @description **上游**订单号。平台据此反查本地订单
+             * @example FX-2026-000123
+             */
+            orderNo: string;
+            /**
+             * @description 上游状态原文，原样存入订单的 `upstream_order_status` 等字段。
+             *     平台不解析它的取值——上游新增状态值时不应该让本服务出错。
+             * @example issued
+             */
+            status: string;
+            /** @description 上游证书编号，签发类事件才有 */
+            certId?: string | null;
+            /** @description 域名验证状态，验证类事件才有 */
+            domains?: {
+                domain: string;
+                /** @description 上游的域名验证状态原文 */
+                status: string;
+                /** @description 上游记录的验证方式 */
+                method?: string | null;
+            }[] | null;
+            /**
+             * Format: date-time
+             * @description 事件在上游产生的时间。用于判断乱序投递
+             */
+            occurredAt?: string | null;
+            /**
+             * @description 上游报文的完整原文。落库保存以便上游改了字段而平台没跟上时仍可追溯。
+             *     截断后存储，超长部分丢弃。
+             */
+            raw?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * @description 上游约定的应答体。刻意不套 `ApiEnvelope`——上游只认它自己文档里的
+         *     `{"status":"success"}`，包一层 `code`/`message` 会被判成失败并触发重推。
+         */
+        WebhookAck: {
+            /**
+             * @example success
+             * @enum {string}
+             */
+            status: "success";
         };
         /** @description 所有接口响应的公共外壳 */
         ApiEnvelope: {
@@ -977,6 +1654,14 @@ export interface components {
          * @example 1
          */
         ProductId: number;
+        /**
+         * @description 平台订单号，形如 CS20260917120000A7K3M9。
+         *
+         *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+         *     `upstreamOrderNo`。两者不可混用。
+         * @example CS20260917120000A7K3M9
+         */
+        OrderNo: string;
     };
     requestBodies: never;
     headers: never;
@@ -1377,6 +2062,477 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    listOrders: {
+        parameters: {
+            query?: {
+                /** @description 分页游标，取上一页响应的 `nextCursor`。省略表示从最新一条开始。 */
+                cursor?: number;
+                /** @description 每页条数，默认 20，最大 100。超过 100 会截断为 100 而不是报错。 */
+                limit?: number;
+                /** @description 按状态筛选，省略表示不筛选 */
+                status?: components["schemas"]["OrderStatus"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 创建成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            /**
+             * @description 参数校验失败（业务码 1000），或余额不足（业务码 2000）。
+             *
+             *     产品规则不满足时也走本响应，字段级原因在 `data.fields` 里，
+             *     例如 `domains: 该产品不支持通配符域名`。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 产品不存在或已下架 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    getOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDetailResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cancelOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description 取消原因，便于客服追溯 */
+                    reason?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description 取消成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDetailResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单当前状态或产品能力不允许取消 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    reissueOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description 重签原因 */
+                    reason?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description 重签请求已提交 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDetailResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单状态或产品能力不允许重签 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    listOrderDomains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainListResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    verifyOrderDomains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyDomainsRequest"];
+            };
+        };
+        responses: {
+            /** @description 已提交验证 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainListResponse"];
+                };
+            };
+            /** @description 域名不属于本订单，或验证方式不在可用集合内 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单当前状态不允许提交验证（只有 waiting_dcv 允许） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    resendDcvEmail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResendEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description 已重发 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单当前状态不允许该操作，或域名未使用邮件验证 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    regenerateDcvToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 重新生成成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegenerateTokenResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单当前状态不允许该操作 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    downloadCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description 平台订单号，形如 CS20260917120000A7K3M9。
+                 *
+                 *     这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+                 *     `upstreamOrderNo`。两者不可混用。
+                 * @example CS20260917120000A7K3M9
+                 */
+                orderNo: components["parameters"]["OrderNo"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 获取成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CertificateResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description 订单尚未签发 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+        };
+    };
+    handleFoxsslWebhook: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description HMAC-SHA256 签名的 Base64 编码 */
+                "X-Webhook-Signature": string;
+                /**
+                 * @description 事件产生时间（Unix 秒）。用于排查乱序投递——
+                 *     上游不保证投递顺序，旧事件可能晚于新事件到达。
+                 */
+                "X-Webhook-Timestamp"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 上游事件的原始 JSON。验签基于原始字节，因此服务端不得在验签前解析或重新编码它。 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FoxsslWebhookPayload"];
+            };
+        };
+        responses: {
+            /** @description 已受理 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAck"];
+                };
+            };
+            /** @description 报文无法解析 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 验签失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
 }

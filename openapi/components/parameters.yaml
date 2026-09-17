@@ -8,3 +8,19 @@ ProductId:
     format: int64
     minimum: 1
   example: 1
+
+OrderNo:
+  name: orderNo
+  in: path
+  required: true
+  description: |
+    平台订单号，形如 CS20260917120000A7K3M9。
+
+    这是平台自己的编号，不是上游 FoxSSL 订单号——上游订单号见订单详情的
+    `upstreamOrderNo`。两者不可混用。
+  schema:
+    type: string
+    pattern: '^CS[0-9]{14}[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$'
+    maxLength: 32
+  example: CS20260917120000A7K3M9
+

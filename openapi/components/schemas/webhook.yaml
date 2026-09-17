@@ -1,0 +1,73 @@
+FoxsslWebhookPayload:
+  type: object
+  description: |
+    上游事件报文。字段与上游文档一一对应，平台不做重命名——
+    改名会让「对不上上游文档」成为常态，排障时要在两份字段名之间来回翻译。
+
+    平台自己的字段（本地订单号等）由平台根据 `orderNo` 反查，报文里没有。
+  required: [event, orderNo, status]
+  properties:
+    event:
+      type: string
+      description: |
+        事件类型。取值由上游定义，平台按事件类型决定要刷新哪些数据。
+
+        - `order_status` 订单状态变化
+        - `dcv_status` 域名验证状态变化
+        - `certificate_issued` 证书已签发，可以下载了
+      example: certificate_issued
+    orderNo:
+      type: string
+      description: '**上游**订单号。平台据此反查本地订单'
+      example: FX-2026-000123
+    status:
+      type: string
+      description: |
+        上游状态原文，原样存入订单的 `upstream_order_status` 等字段。
+        平台不解析它的取值——上游新增状态值时不应该让本服务出错。
+      example: issued
+    certId:
+      type: string
+      nullable: true
+      description: 上游证书编号，签发类事件才有
+    domains:
+      type: array
+      nullable: true
+      description: 域名验证状态，验证类事件才有
+      items:
+        type: object
+        required: [domain, status]
+        properties:
+          domain:
+            type: string
+          status:
+            type: string
+            description: 上游的域名验证状态原文
+          method:
+            type: string
+            nullable: true
+            description: 上游记录的验证方式
+    occurredAt:
+      type: string
+      format: date-time
+      nullable: true
+      description: 事件在上游产生的时间。用于判断乱序投递
+    raw:
+      type: object
+      additionalProperties: true
+      nullable: true
+      description: |
+        上游报文的完整原文。落库保存以便上游改了字段而平台没跟上时仍可追溯。
+        截断后存储，超长部分丢弃。
+
+WebhookAck:
+  type: object
+  description: |
+    上游约定的应答体。刻意不套 `ApiEnvelope`——上游只认它自己文档里的
+    `{"status":"success"}`，包一层 `code`/`message` 会被判成失败并触发重推。
+  required: [status]
+  properties:
+    status:
+      type: string
+      enum: [success]
+      example: success

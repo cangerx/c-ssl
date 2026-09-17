@@ -39,6 +39,10 @@ tags:
     description: 钱包余额与账本流水
   - name: products
     description: 产品目录与可用规则
+  - name: orders
+    description: 证书订单、域名验证与证书下载
+  - name: webhooks
+    description: 上游事件回调（调用方是上游服务器，不套用户鉴权）
 
 security:
   - bearerAuth: []
@@ -83,6 +87,36 @@ paths:
   /products/{id}:
     $ref: './paths/products.yaml#/detail'
 
+  /orders:
+    $ref: './paths/orders.yaml#/orders'
+
+  /orders/{orderNo}:
+    $ref: './paths/orders.yaml#/orderDetail'
+
+  /orders/{orderNo}/cancel:
+    $ref: './paths/orders.yaml#/cancelOrder'
+
+  /orders/{orderNo}/reissue:
+    $ref: './paths/orders.yaml#/reissueOrder'
+
+  /orders/{orderNo}/domains:
+    $ref: './paths/orders.yaml#/orderDomains'
+
+  /orders/{orderNo}/domains/verify:
+    $ref: './paths/orders.yaml#/verifyDomains'
+
+  /orders/{orderNo}/domains/resend-email:
+    $ref: './paths/orders.yaml#/resendDcvEmail'
+
+  /orders/{orderNo}/domains/regenerate-token:
+    $ref: './paths/orders.yaml#/regenerateDcvToken'
+
+  /orders/{orderNo}/certificate:
+    $ref: './paths/orders.yaml#/downloadCertificate'
+
+  /webhooks/foxssl:
+    $ref: './paths/webhooks.yaml#/foxssl'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -91,6 +125,9 @@ components:
   parameters:
     ProductId:
       $ref: './components/parameters.yaml#/ProductId'
+
+    OrderNo:
+      $ref: './components/parameters.yaml#/OrderNo'
 
   schemas:
     ErrorResponse:
@@ -146,6 +183,63 @@ components:
 
     ProductDetailResponse:
       $ref: './components/schemas/product.yaml#/ProductDetailResponse'
+
+    OrderStatus:
+      $ref: './components/schemas/order.yaml#/OrderStatus'
+
+    OrderContact:
+      $ref: './components/schemas/order.yaml#/OrderContact'
+
+    OrderOrganization:
+      $ref: './components/schemas/order.yaml#/OrderOrganization'
+
+    CreateOrderRequest:
+      $ref: './components/schemas/order.yaml#/CreateOrderRequest'
+
+    CertificateOrderSummary:
+      $ref: './components/schemas/order.yaml#/CertificateOrderSummary'
+
+    CertificateOrder:
+      $ref: './components/schemas/order.yaml#/CertificateOrder'
+
+    CreateOrderResponse:
+      $ref: './components/schemas/order.yaml#/CreateOrderResponse'
+
+    OrderListResponse:
+      $ref: './components/schemas/order.yaml#/OrderListResponse'
+
+    OrderDetailResponse:
+      $ref: './components/schemas/order.yaml#/OrderDetailResponse'
+
+    DomainStatus:
+      $ref: './components/schemas/dcv.yaml#/DomainStatus'
+
+    OrderDomain:
+      $ref: './components/schemas/dcv.yaml#/OrderDomain'
+
+    DomainListResponse:
+      $ref: './components/schemas/dcv.yaml#/DomainListResponse'
+
+    VerifyDomainsRequest:
+      $ref: './components/schemas/dcv.yaml#/VerifyDomainsRequest'
+
+    ResendEmailRequest:
+      $ref: './components/schemas/dcv.yaml#/ResendEmailRequest'
+
+    RegenerateTokenResponse:
+      $ref: './components/schemas/dcv.yaml#/RegenerateTokenResponse'
+
+    Certificate:
+      $ref: './components/schemas/certificate.yaml#/Certificate'
+
+    CertificateResponse:
+      $ref: './components/schemas/certificate.yaml#/CertificateResponse'
+
+    FoxsslWebhookPayload:
+      $ref: './components/schemas/webhook.yaml#/FoxsslWebhookPayload'
+
+    WebhookAck:
+      $ref: './components/schemas/webhook.yaml#/WebhookAck'
 
   responses:
     BadRequest:
