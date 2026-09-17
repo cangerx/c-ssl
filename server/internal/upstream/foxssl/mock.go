@@ -70,7 +70,8 @@ type MockClient struct {
 	mu         sync.Mutex
 	orders     map[string]*mockOrder // key: 上游订单号
 	byMerchant map[string]string     // 商户订单号 → 上游订单号
-	seq        int64
+	// seq 是订单序号。初值随机，见 NewMockClient 的说明。
+	seq int64
 	// cost 是 CreateOrder 返回的成本价，可被测试调整。
 	cost money.Amount
 	// failures 是一次性失败注入，key 是操作名。命中后即删除，
@@ -108,6 +109,12 @@ type mockOrder struct {
 // apiKey 与 webhookSecret 都必须非空。允许空值意味着「忘记配置」会
 // 静默变成「用一个空密钥验签」——而空密钥的 HMAC 是任何人都会算的，
 // 验签就成了一道装饰。
+//
+// 订单序号的初值取自随机数，而不是从 1 开始。从 1 开始时，
+// 两个独立进程里的 Mock 会生成完全相同的上游订单号
+// （`FX-20260916-0001`），而测试包之间是并行跑的——
+// 于是不同包的测试会算出同一个事件幂等键，后跑的那个看到「重复事件」
+// 直接跳过，测试静默变成假绿。真实上游也不会每天从 1 开始编号。
 func NewMockClient(apiKey, webhookSecret, baseURL string) (*MockClient, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("mock 上游的 API Key 未配置（FOXSSL_API_KEY）")
@@ -122,9 +129,23 @@ func NewMockClient(apiKey, webhookSecret, baseURL string) (*MockClient, error) {
 		clock:         time.Now,
 		orders:        make(map[string]*mockOrder),
 		byMerchant:    make(map[string]string),
+		seq:           randomSeq(),
 		cost:          1000,
 		failures:      make(map[string]error),
 	}, nil
+}
+
+// randomSeq 生成订单序号的初值。
+//
+// 取不到随机数时退回 0：这只影响上游订单号的取值分布，
+// 不影响任何业务行为，没必要因为一个随机数就让构造失败。
+func randomSeq() int64 {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0
+	}
+	n := int64(buf[0])<<24 | int64(buf[1])<<16 | int64(buf[2])<<8 | int64(buf[3])
+	return n % 1_000_000
 }
 
 // Name 返回上游标识。
@@ -294,7 +315,7 @@ func (c *MockClient) CreateOrder(_ context.Context, req CreateOrderRequest) (*Cr
 	c.seq++
 	now := c.clock()
 	o := &mockOrder{
-		upstreamOrderNo: fmt.Sprintf("FX-%s-%04d", now.Format("20060102"), c.seq),
+		upstreamOrderNo: fmt.Sprintf("FX-%s-%06d", now.Format("20060102"), c.seq),
 		merchantOrderNo: req.MerchantOrderNo,
 		productID:       req.UpstreamProductID,
 		years:           req.Years,

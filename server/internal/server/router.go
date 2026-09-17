@@ -13,6 +13,7 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/config"
 	"github.com/cangerx/c-ssl/server/internal/domain/errs"
 	"github.com/cangerx/c-ssl/server/internal/domain/token"
+	"github.com/cangerx/c-ssl/server/internal/order"
 	"github.com/cangerx/c-ssl/server/internal/platform/mysql"
 	"github.com/cangerx/c-ssl/server/internal/platform/ratelimit"
 	platformredis "github.com/cangerx/c-ssl/server/internal/platform/redis"
@@ -20,6 +21,7 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/recharge"
 	"github.com/cangerx/c-ssl/server/internal/server/httpx"
 	"github.com/cangerx/c-ssl/server/internal/server/middleware"
+	"github.com/cangerx/c-ssl/server/internal/upstream/foxssl"
 	"github.com/cangerx/c-ssl/server/internal/upstream/payment"
 	"github.com/cangerx/c-ssl/server/internal/user"
 	"github.com/cangerx/c-ssl/server/internal/wallet"
@@ -46,6 +48,18 @@ type Deps struct {
 	PaymentChannels []payment.Channel
 	// MockPaymentChannel 非空时注册开发环境的模拟回调接口。
 	MockPaymentChannel *payment.MockChannel
+
+	// FoxSSLClient 是证书上游适配器，由 bootstrap 构造。
+	//
+	// 类型是接口而不是 *foxssl.MockClient：路由层不需要知道上游是谁，
+	// 测试也能注入一个自己控制状态的 Mock 实例来构造上游的推进与回调。
+	FoxSSLClient foxssl.Client
+	// MockFoxSSLClient 非空时注册「推进模拟上游」的开发辅助接口。
+	//
+	// 这里出现具体类型是有意的，与 MockPaymentChannel 同理：模拟上游的
+	// 控制方法（把订单标成已签发）不属于 foxssl.Client——真实 CA 没有这个
+	// 能力——所以它只能从具体类型上取，取不到就不注册这条路由。
+	MockFoxSSLClient *foxssl.MockClient
 }
 
 // NewRouter 构建路由。中间件顺序为 Trace → Log → Recover，
@@ -96,6 +110,31 @@ func NewRouter(deps Deps) http.Handler {
 			auth,
 			deps.MockPaymentChannel,
 			deps.Config.TrustProxy,
+		).Routes(r)
+
+		// 订单域同时持有钱包服务与产品服务：
+		//   钱包——下单要冻结、上游受理后转实扣、失败要解冻，
+		//         余额一律由钱包域改，订单域不碰余额表；
+		//   产品——价格与上游产品编号取自产品，之后一律用订单上的快照。
+		//
+		// 先判空再赋值，不能直接把 *foxssl.MockClient 塞进接口参数：
+		// 值为 nil 的具体指针装进接口后，接口本身不是 nil，订单域里的
+		// `if h.mock != nil` 会成立——于是生产环境也会注册那个开发辅助接口，
+		// 而且第一次调用就会因为解引用空指针而 panic。
+		var mockUpstream order.MockUpstream
+		if deps.MockFoxSSLClient != nil {
+			mockUpstream = deps.MockFoxSSLClient
+		}
+		order.NewHandler(
+			order.NewService(
+				order.NewRepository(deps.DB),
+				wallet.NewService(wallet.NewRepository(deps.DB)),
+				product.NewService(product.NewRepository(deps.DB)),
+				deps.FoxSSLClient,
+			),
+			auth,
+			deps.Config.TrustProxy,
+			mockUpstream,
 		).Routes(r)
 	})
 

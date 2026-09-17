@@ -46,6 +46,8 @@ func run() error {
 		Version:            version.String(),
 		PaymentChannels:    app.PaymentChannels,
 		MockPaymentChannel: app.MockPaymentChannel,
+		FoxSSLClient:       app.FoxSSLClient,
+		MockFoxSSLClient:   app.MockFoxSSLClient,
 	})
 	srv := server.NewHTTPServer(app.Config.Addr(), router)
 

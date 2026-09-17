@@ -16,6 +16,7 @@ import (
 	"github.com/cangerx/c-ssl/server/internal/platform/logger"
 	"github.com/cangerx/c-ssl/server/internal/platform/mysql"
 	platformredis "github.com/cangerx/c-ssl/server/internal/platform/redis"
+	"github.com/cangerx/c-ssl/server/internal/upstream/foxssl"
 	"github.com/cangerx/c-ssl/server/internal/upstream/payment"
 	"github.com/cangerx/c-ssl/server/internal/version"
 )
@@ -32,6 +33,16 @@ type App struct {
 	// MockPaymentChannel 非空表示启用了 Mock 渠道。
 	// 开发环境据此注册模拟回调接口；本包不判断环境，环境判断集中在配置层。
 	MockPaymentChannel *payment.MockChannel
+
+	// FoxSSLClient 是证书上游适配器，供路由装配注入给订单域。
+	//
+	// 接口而不是具体类型：订单域只依赖 foxssl.Client，接入真实上游时
+	// 这里换一个构造分支即可，订单域一行都不用改。
+	FoxSSLClient foxssl.Client
+	// MockFoxSSLClient 非空表示启用了 Mock 上游，订单域据此注册
+	// 「推进模拟上游」的开发辅助接口。与 MockPaymentChannel 同一套模式：
+	// 本包不判断环境，环境判断集中在配置层（生产环境不允许 mock）。
+	MockFoxSSLClient *foxssl.MockClient
 }
 
 // New 按顺序加载配置、初始化日志、连接 MySQL 与 Redis。
@@ -53,6 +64,13 @@ func New(ctx context.Context) (*App, error) {
 	// 密钥缺失、配置了未实现的渠道这类问题必须在启动时就暴露，
 	// 而不是等到用户点开支付页、或者渠道回调进来时才发现。
 	if app.PaymentChannels, app.MockPaymentChannel, err = buildPaymentChannels(cfg); err != nil {
+		return nil, err
+	}
+
+	// 证书上游同样在启动阶段构造。配置了未实现的上游时拒绝启动，
+	// 而不是悄悄回退到 Mock——那会让「以为在下真单」的环境
+	// 一直签发着浏览器不信任的证书，而且全程不报错。
+	if app.FoxSSLClient, app.MockFoxSSLClient, err = buildFoxSSL(cfg); err != nil {
 		return nil, err
 	}
 
@@ -88,6 +106,31 @@ func buildPaymentChannels(cfg *config.Config) ([]payment.Channel, *payment.MockC
 		// 那会让「以为在收真钱」的环境实际一分钱没收到，而且不会报错。
 		return nil, nil, fmt.Errorf(
 			"未实现的支付渠道 %q：当前仅支持 %s", cfg.PaymentProvider, payment.NameMock)
+	}
+}
+
+// buildFoxSSL 构造证书上游适配器。
+//
+// 与支付渠道一样，只有一个实现时这层 switch 看起来是多余的。
+// 保留它是为了给「配置了未实现的上游」一个明确的失败点：
+// 少了它，FOXSSL_PROVIDER=real 会被静默忽略，服务照常启动、照常用 Mock 签单。
+//
+// 第二个返回值是具体的 Mock 客户端，仅在启用 Mock 上游时非空。
+// 返回具体类型而不是接口，是为了让调用方能安全地判空——见 router 里的说明。
+func buildFoxSSL(cfg *config.Config) (foxssl.Client, *foxssl.MockClient, error) {
+	switch cfg.FoxSSLProvider {
+	case foxssl.NameMock:
+		client, err := foxssl.NewMockClient(
+			cfg.FoxSSLAPIKey, cfg.FoxSSLWebhookSecret, cfg.FoxSSLBaseURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("构造 Mock 证书上游失败: %w", err)
+		}
+		return client, client, nil
+
+	default:
+		// 真实上游在 Phase 5 接入（见 docs/06 第 10 节）。
+		return nil, nil, fmt.Errorf(
+			"未实现的证书上游 %q：当前仅支持 %s", cfg.FoxSSLProvider, foxssl.NameMock)
 	}
 }
 

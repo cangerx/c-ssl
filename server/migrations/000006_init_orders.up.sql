@@ -3,9 +3,12 @@
 --
 -- 设计取舍：
 --
---   * 订单快照产品信息（product_name / brand / validation_type）。
+--   * 订单快照产品信息（product_name / brand / validation_type /
+--     upstream_product_id）。
 --     产品会改价、会下架、能力字段也会调整，而订单是历史事实。
 --     只存 product_id 再联表读，会让三个月前的老订单显示成今天的名字与价格。
+--     upstream_product_id 尤其不能省：补偿重试要用**下单时**发给上游的编号，
+--     产品配置后来改了的话，用新编号重试会得到一个与原始订单不同的结果。
 --
 --   * upstream_order_no 建唯一索引，且允许 NULL。
 --     MySQL 的唯一索引允许多个 NULL，所以「尚未提交上游」的订单不会互相冲突，
@@ -47,6 +50,7 @@ CREATE TABLE `certificate_orders` (
   `product_name`             VARCHAR(128)    NOT NULL                         COMMENT '下单时的产品名快照',
   `brand`                    VARCHAR(64)     NOT NULL                         COMMENT '下单时的品牌快照',
   `validation_type`          VARCHAR(8)      NOT NULL                         COMMENT 'dv / ov / ev，下单时的快照',
+  `upstream_product_id`      INT             NOT NULL                         COMMENT '下单时发给上游的产品编号快照，见文件头注释',
   `years`                    INT             NOT NULL                         COMMENT '购买年限',
   `key_algorithm`            VARCHAR(8)      NOT NULL                         COMMENT 'rsa / ecc',
   `amount`                   BIGINT          NOT NULL                         COMMENT '订单金额（分），等于下单时冻结并实扣的零售价；免费证书为 0',
